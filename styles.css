@@ -1,0 +1,21 @@
+.ink2markdown-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.ink2markdown-status {
+  font-size: 0.95em;
+}
+
+.ink2markdown-progressbar {
+  width: 100%;
+  height: 16px;
+}
+
+.ink2markdown-disclosure .ink2markdown-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}

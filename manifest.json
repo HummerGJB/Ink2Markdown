@@ -1,0 +1,9 @@
+{
+  "id": "ink2markdown",
+  "name": "Ink2Markdown",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Convert embedded handwritten note images into normalized Obsidian Markdown.",
+  "author": "Ink2Markdown",
+  "isDesktopOnly": false
+}
