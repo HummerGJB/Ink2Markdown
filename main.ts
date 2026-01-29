@@ -16,6 +16,7 @@ interface Ink2MarkdownSettings {
   systemPrompt: string;
   extractionPrompt: string;
   cleanupPrompt: string;
+  titlePrompt: string;
   openaiApiKey: string;
   openaiModel: string;
   azureEndpoint: string;
@@ -34,6 +35,7 @@ interface Prompts {
 interface CaptureResult {
   status: "done" | "cancel";
   count: number;
+  autoTitle: boolean;
 }
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -64,6 +66,10 @@ Rules:
 6. Do not add page separators.
 7. Preserve ==ILLEGIBLE== markers as-is.`;
 
+const DEFAULT_TITLE_PROMPT = `You generate concise, descriptive note titles.
+Given the full note content, return a short title (3-6 words) that captures the main topic.
+Output only the title text with no quotes, no punctuation at the end, and no extra commentary.`;
+
 const OPENAI_MODELS = [
   "gpt-5.2",
   "gpt-5.2-pro",
@@ -80,6 +86,7 @@ const DEFAULT_SETTINGS: Ink2MarkdownSettings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
   cleanupPrompt: DEFAULT_CLEANUP_PROMPT,
+  titlePrompt: DEFAULT_TITLE_PROMPT,
   openaiApiKey: "",
   openaiModel: "gpt-5.2",
   azureEndpoint: "",
@@ -255,6 +262,7 @@ class CaptureModal extends Modal {
   private resolved = false;
   private captured = 0;
   private processing = false;
+  private autoTitle = false;
   private statusEl!: HTMLElement;
   private takeButton!: HTMLButtonElement;
   private doneButton!: HTMLButtonElement;
@@ -282,6 +290,15 @@ class CaptureModal extends Modal {
     this.statusEl = contentEl.createEl("div", {
       cls: "ink2markdown-capture-status",
       text: "No photos captured yet."
+    });
+
+    const optionRow = contentEl.createEl("label", {
+      cls: "ink2markdown-capture-option"
+    });
+    const checkbox = optionRow.createEl("input", { type: "checkbox" });
+    optionRow.createSpan({ text: "Auto-generate title with AI" });
+    checkbox.addEventListener("change", () => {
+      this.autoTitle = checkbox.checked;
     });
 
     const buttonRow = contentEl.createEl("div", { cls: "ink2markdown-buttons" });
@@ -391,7 +408,7 @@ class CaptureModal extends Modal {
     }
 
     this.resolved = true;
-    this.resolve({ status, count: this.captured });
+    this.resolve({ status, count: this.captured, autoTitle: this.autoTitle });
     this.close();
   }
 }
@@ -403,6 +420,7 @@ interface ProviderAdapter {
     token: CancellationToken
   ): Promise<string>;
   cleanup(markdown: string, prompts: Prompts, token: CancellationToken): Promise<string>;
+  generateTitle(markdown: string, prompt: string, token: CancellationToken): Promise<string>;
   testConnection(token: CancellationToken): Promise<void>;
 }
 
@@ -506,6 +524,35 @@ class OpenAIProvider implements ProviderAdapter {
       token,
       "openai"
     );
+  }
+
+  async generateTitle(markdown: string, prompt: string, token: CancellationToken): Promise<string> {
+    const body = {
+      model: this.model,
+      instructions: prompt,
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: markdown }]
+        }
+      ]
+    };
+
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "openai"
+    );
+
+    return extractOpenAIOutputText(response);
   }
 }
 
@@ -614,6 +661,36 @@ class AzureOpenAIProvider implements ProviderAdapter {
       "azure"
     );
   }
+
+  async generateTitle(markdown: string, prompt: string, token: CancellationToken): Promise<string> {
+    const body = {
+      messages: [
+        { role: "system", content: prompt },
+        {
+          role: "user",
+          content: [{ type: "text", text: markdown }]
+        }
+      ]
+    };
+
+    const response = await fetchWithRetry(
+      `${this.endpoint}/openai/deployments/${encodeURIComponent(
+        this.deployment
+      )}/chat/completions?api-version=${encodeURIComponent(this.apiVersion)}`,
+      {
+        method: "POST",
+        headers: {
+          "api-key": this.apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "azure"
+    );
+
+    return extractAzureOutputText(response);
+  }
 }
 
 export default class Ink2MarkdownPlugin extends Plugin {
@@ -647,24 +724,24 @@ export default class Ink2MarkdownPlugin extends Plugin {
     await this.runConversionForFile(file);
   }
 
-  private async runConversionForFile(file: TFile): Promise<void> {
+  private async runConversionForFile(file: TFile): Promise<string | null> {
     const noteText = await this.app.vault.read(file);
     const embeds = findImageEmbeds(noteText);
 
     if (embeds.length === 0) {
       new Notice("No embedded images found in note.");
-      return;
+      return null;
     }
 
     const configError = validateSettings(this.settings);
     if (configError) {
       new Notice(configError);
-      return;
+      return null;
     }
 
     const accepted = await this.ensurePrivacyAccepted();
     if (!accepted) {
-      return;
+      return null;
     }
 
     const prompts: Prompts = {
@@ -718,10 +795,12 @@ export default class Ink2MarkdownPlugin extends Plugin {
 
       progressModal.close();
       new Notice("Inserted Markdown transcription at top of note.");
+      return cleaned.trim();
     } catch (error) {
       token.cancel();
       progressModal.close();
       new Notice(formatError(error));
+      return null;
     }
   }
 
@@ -749,7 +828,10 @@ export default class Ink2MarkdownPlugin extends Plugin {
       return;
     }
 
-    await this.runConversionForFile(file);
+    const cleaned = await this.runConversionForFile(file);
+    if (result.autoTitle && cleaned) {
+      await this.generateAndApplyTitle(file, cleaned);
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -845,6 +927,74 @@ export default class Ink2MarkdownPlugin extends Plugin {
       new Notice("Connection successful.");
     } catch (error) {
       new Notice(formatError(error));
+    }
+  }
+
+  private async generateAndApplyTitle(file: TFile, markdown: string): Promise<void> {
+    const configError = validateSettings(this.settings);
+    if (configError) {
+      new Notice(configError);
+      return;
+    }
+
+    const accepted = await this.ensurePrivacyAccepted();
+    if (!accepted) {
+      return;
+    }
+
+    const provider: ProviderAdapter =
+      this.settings.provider === "openai"
+        ? new OpenAIProvider(this.settings)
+        : new AzureOpenAIProvider(this.settings);
+
+    const token = new CancellationToken();
+
+    try {
+      const rawTitle = await provider.generateTitle(
+        markdown,
+        this.settings.titlePrompt,
+        token
+      );
+      const title = normalizeTitle(rawTitle);
+      if (!title) {
+        new Notice("AI title generation returned an empty title.");
+        return;
+      }
+
+      const targetPath = this.buildAvailableNotePath(file, title);
+      if (targetPath === file.path) {
+        return;
+      }
+
+      await this.app.fileManager.renameFile(file, targetPath);
+      new Notice(`Renamed note to "${title}".`);
+    } catch (error) {
+      token.cancel();
+      new Notice(formatError(error));
+    }
+  }
+
+  private buildAvailableNotePath(file: TFile, title: string): string {
+    const safeTitle = sanitizeTitle(title) || "Untitled";
+    const folder = file.parent?.path ?? "";
+    const basePath = folder ? `${folder}/${safeTitle}.md` : `${safeTitle}.md`;
+    if (basePath === file.path) {
+      return basePath;
+    }
+
+    if (!this.app.vault.getAbstractFileByPath(basePath)) {
+      return basePath;
+    }
+
+    let counter = 1;
+    while (true) {
+      const candidate = folder
+        ? `${folder}/${safeTitle} ${counter}.md`
+        : `${safeTitle} ${counter}.md`;
+      if (!this.app.vault.getAbstractFileByPath(candidate)) {
+        return candidate;
+      }
+      counter += 1;
     }
   }
 }
@@ -1028,6 +1178,23 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
       "Reset Cleanup Prompt"
     );
 
+    addPromptSetting(
+      containerEl,
+      "Title prompt",
+      "Prompt used to generate a short title from the cleaned note.",
+      this.plugin.settings.titlePrompt,
+      async (value) => {
+        this.plugin.settings.titlePrompt = value;
+        await this.plugin.saveSettings();
+      },
+      async () => {
+        this.plugin.settings.titlePrompt = DEFAULT_TITLE_PROMPT;
+        await this.plugin.saveSettings();
+        this.display();
+      },
+      "Reset Title Prompt"
+    );
+
     containerEl.createEl("h3", { text: "Privacy disclosure" });
 
     const acceptedAt = this.plugin.settings.privacyAcceptedAt;
@@ -1107,6 +1274,25 @@ function validateSettings(settings: Ink2MarkdownSettings): string | null {
   }
 
   return null;
+}
+
+function normalizeTitle(raw: string): string {
+  const firstLine = raw.split(/\r?\n/)[0]?.trim() ?? "";
+  const stripped = firstLine.replace(/^["'“”]+|["'“”]+$/g, "");
+  return sanitizeTitle(stripped);
+}
+
+function sanitizeTitle(title: string): string {
+  const cleaned = title
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+/, "")
+    .replace(/\.+$/, "");
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.length > 80 ? cleaned.slice(0, 80).trim() : cleaned;
 }
 
 function findImageEmbeds(noteText: string): Array<{ linkpath: string }> {
