@@ -80,6 +80,10 @@ Output only the title text with no quotes, no punctuation at the end, and no ext
 const CHUNK_HEIGHT_PX = 900;
 const CHUNK_OVERLAP_PX = 200;
 const MIN_OVERLAP_LINES = 2;
+const OVERLAP_SIMILARITY = 0.92;
+const OVERLAP_ANCHOR_SIMILARITY = 0.97;
+const OVERLAP_ANCHOR_MIN_CHARS = 10;
+const DEDUPE_SIMILARITY = 0.98;
 
 const CHUNK_PREAMBLE = `You are given a cropped horizontal slice of a page image.
 Transcribe only the text visible in this slice.
@@ -1633,7 +1637,8 @@ function mergeChunkOutputs(chunks: string[]): string {
   for (let i = 1; i < nonEmpty.length; i += 1) {
     merged = mergeTwoChunks(merged, nonEmpty[i]);
   }
-  return merged;
+  const lines = splitLines(merged);
+  return dedupeAdjacentLines(lines).join("\n");
 }
 
 function mergeTwoChunks(previous: string, next: string): string {
@@ -1647,7 +1652,16 @@ function mergeTwoChunks(previous: string, next: string): string {
   const previousLines = splitLines(previous);
   const nextLines = splitLines(next);
   const overlap = findLineOverlap(previousLines, nextLines);
-  return previousLines.concat(nextLines.slice(overlap)).join("\n");
+  if (overlap === 0) {
+    return previousLines.concat(nextLines).join("\n");
+  }
+
+  const head = previousLines.slice(0, previousLines.length - overlap);
+  const mergedOverlap = previousLines
+    .slice(previousLines.length - overlap)
+    .map((line, index) => pickBetterLine(line, nextLines[index]));
+  const tail = nextLines.slice(overlap);
+  return head.concat(mergedOverlap, tail).join("\n");
 }
 
 function splitLines(text: string): string[] {
@@ -1656,9 +1670,13 @@ function splitLines(text: string): string[] {
 
 function findLineOverlap(previous: string[], next: string[]): number {
   const maxOverlap = Math.min(previous.length, next.length);
-  for (let size = maxOverlap; size >= MIN_OVERLAP_LINES; size -= 1) {
+  const minOverlap = Math.min(MIN_OVERLAP_LINES, maxOverlap);
+  for (let size = maxOverlap; size >= minOverlap; size -= 1) {
     const prevSlice = previous.slice(previous.length - size);
     const nextSlice = next.slice(0, size);
+    if (!hasAnchorLine(prevSlice, nextSlice)) {
+      continue;
+    }
     if (linesMatch(prevSlice, nextSlice)) {
       return size;
     }
@@ -1668,25 +1686,147 @@ function findLineOverlap(previous: string[], next: string[]): number {
 
 function linesMatch(previous: string[], next: string[]): boolean {
   for (let i = 0; i < previous.length; i += 1) {
-    const prevNorm = normalizeLineForMatch(previous[i]);
-    const nextNorm = normalizeLineForMatch(next[i]);
-    if (!isSubstantialLine(prevNorm) || !isSubstantialLine(nextNorm)) {
+    const prevLine = previous[i];
+    const nextLine = next[i];
+    if (!isSubstantialLine(prevLine) || !isSubstantialLine(nextLine)) {
       return false;
     }
-    if (prevNorm !== nextNorm) {
+    const similarity = lineSimilarity(prevLine, nextLine);
+    if (similarity < OVERLAP_SIMILARITY) {
       return false;
     }
   }
   return true;
 }
 
-function normalizeLineForMatch(line: string): string {
-  return line.trim().replace(/\s+/g, " ").toLowerCase();
+function lineSimilarity(lineA: string, lineB: string): number {
+  const a = normalizeLineForSimilarity(lineA);
+  const b = normalizeLineForSimilarity(lineB);
+  if (!a && !b) {
+    return 1;
+  }
+  if (!a || !b) {
+    return 0;
+  }
+  const distance = levenshteinDistance(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return maxLen === 0 ? 1 : 1 - distance / maxLen;
+}
+
+function normalizeLineForSimilarity(line: string): string {
+  return line
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isSubstantialLine(line: string): boolean {
   const alnumCount = line.replace(/[^a-z0-9]/gi, "").length;
   return alnumCount >= 3;
+}
+
+function hasAnchorLine(previous: string[], next: string[]): boolean {
+  for (let i = 0; i < previous.length; i += 1) {
+    const prev = previous[i];
+    const nextLine = next[i];
+    if (!isLongLinePair(prev, nextLine)) {
+      continue;
+    }
+    if (lineSimilarity(prev, nextLine) >= OVERLAP_ANCHOR_SIMILARITY) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLongLinePair(a: string, b: string): boolean {
+  const aCount = a.replace(/[^a-z0-9]/gi, "").length;
+  const bCount = b.replace(/[^a-z0-9]/gi, "").length;
+  return aCount >= OVERLAP_ANCHOR_MIN_CHARS && bCount >= OVERLAP_ANCHOR_MIN_CHARS;
+}
+
+function pickBetterLine(a: string, b: string): string {
+  const aIllegible = countIllegible(a);
+  const bIllegible = countIllegible(b);
+  if (aIllegible !== bIllegible) {
+    return aIllegible < bIllegible ? a : b;
+  }
+  const aLen = a.trim().length;
+  const bLen = b.trim().length;
+  if (aLen !== bLen) {
+    return aLen > bLen ? a : b;
+  }
+  return a;
+}
+
+function countIllegible(line: string): number {
+  const matches = line.match(/==ILLEGIBLE==/g);
+  return matches ? matches.length : 0;
+}
+
+function dedupeAdjacentLines(lines: string[]): string[] {
+  const result: string[] = [];
+  for (const line of lines) {
+    if (result.length === 0) {
+      result.push(line);
+      continue;
+    }
+    const last = result[result.length - 1];
+    if (areLinesNearDuplicate(last, line)) {
+      result[result.length - 1] = pickBetterLine(last, line);
+      continue;
+    }
+    result.push(line);
+  }
+  return result;
+}
+
+function areLinesNearDuplicate(a: string, b: string): boolean {
+  if (!isSubstantialLine(a) || !isSubstantialLine(b)) {
+    return false;
+  }
+  const similarity = lineSimilarity(a, b);
+  if (similarity < DEDUPE_SIMILARITY) {
+    return false;
+  }
+  const normA = normalizeLineForSimilarity(a);
+  const normB = normalizeLineForSimilarity(b);
+  return normA === normB || normA.includes(normB) || normB.includes(normA);
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const aLen = a.length;
+  const bLen = b.length;
+  if (aLen === 0) {
+    return bLen;
+  }
+  if (bLen === 0) {
+    return aLen;
+  }
+
+  let prev = new Array<number>(bLen + 1);
+  for (let j = 0; j <= bLen; j += 1) {
+    prev[j] = j;
+  }
+
+  for (let i = 1; i <= aLen; i += 1) {
+    const cur = new Array<number>(bLen + 1);
+    cur[0] = i;
+    const aChar = a.charAt(i - 1);
+    for (let j = 1; j <= bLen; j += 1) {
+      const cost = aChar === b.charAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    prev = cur;
+  }
+
+  return prev[bLen];
 }
 
 async function runWithConcurrency<T>(
