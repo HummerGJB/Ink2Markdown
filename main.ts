@@ -893,7 +893,7 @@ export default class Ink2MarkdownPlugin extends Plugin {
   ): Promise<void> {
     const extension = getCaptureExtension(capture);
     const timestamp = formatTimestampForFilename(new Date());
-    const filename = `Ink Capture ${timestamp}-${String(index).padStart(2, "0")}.${extension}`;
+    const filename = `Ink2Ccapture ${timestamp}-${String(index).padStart(2, "0")}.${extension}`;
     const attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(
       filename,
       noteFile.path
