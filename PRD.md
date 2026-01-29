@@ -4,6 +4,8 @@ PRD — Ink2Markdown (Obsidian plugin)
 
 Ink2Markdown converts handwritten meeting notes (photos embedded in an Obsidian note) into clean, normalized Obsidian-flavored Markdown, inserts the result at the very top of the note (below YAML frontmatter), and leaves the original images in place underneath.
 
+It also provides a mobile-first capture flow: a single command uses the current note, launches the camera, appends each photo to the bottom of the note, and then runs the conversion when capture is finished.
+
 It runs a page-by-page extraction loop (1 API call per image), then a final cleanup pass (1 API call over the concatenated extracted text) to improve cross-page formatting continuity and fix high-confidence OCR errors.
 
 Supports OpenAI and Azure OpenAI as providers, with configurable prompts and “reset to default” buttons.
@@ -21,6 +23,7 @@ Goals
 	4.	Cross-page continuity: cleanup pass merges page breaks, fixes list/indent continuity.
 	5.	Clear privacy disclosure + one-time acceptance (since images are uploaded).
 	6.	Works on macOS desktop and Obsidian iOS (within platform constraints).
+	7.	Mobile-first capture loop: one command to capture multiple pages quickly.
 
 Non-goals (v1)
 	•	Tables, callouts, tag/link inference, diagram/mermaid conversion.
@@ -45,6 +48,14 @@ Core story (happy path)
 	5.	Plugin performs final cleanup pass across the combined text.
 	6.	Plugin inserts the final Markdown at top of note, below YAML frontmatter.
 	7.	Original images remain embedded below.
+
+Capture story (mobile-first)
+	1.	User runs command: Ink2Markdown: Capture images then convert.
+	2.	User has an active note; the plugin uses that note (no new note creation).
+	3.	Plugin opens the camera/file picker and the user captures pages one by one.
+	4.	Each captured image is saved as an attachment and appended to the bottom of the note.
+	5.	User finishes capture.
+	6.	Plugin runs the conversion on that same note, inserting Markdown at the top while keeping images below.
 
 Configuration story
 	•	User opens plugin settings tab and configures:
@@ -119,6 +130,15 @@ FR-15: Insert final Markdown at top of note body, below YAML frontmatter if fron
 
 FR-16: Images remain in place below inserted text (no moving/removal).
 
+5.6.1 Capture loop (mobile-first)
+
+FR-21: Provide a second command: Ink2Markdown: Capture images then convert.
+FR-22: Requires an active Markdown note; if none is active, show a notice and do not start capture.
+FR-23: Launch the device camera/file picker via a file input (accept image/*, capture=environment) and allow repeated captures until the user finishes.
+FR-24: Each captured image is saved as an attachment using Obsidian’s attachment path rules and embedded at the bottom of the note.
+FR-25: When capture finishes, run the standard conversion flow on that same note (text inserted at top, images remain below).
+FR-26: If no photos are captured, show a notice and do not run conversion.
+
 5.7 Illegible marker
 
 FR-17: When the model cannot confidently read a word/phrase, it must output ==ILLEGIBLE== exactly (caps + highlight). (The prompts will enforce this.)
@@ -147,8 +167,18 @@ FR-19: User can cancel mid-run from the progress UI:
 
 6.1 Command
 	•	Command Palette entry: Ink2Markdown: Convert embedded images to Markdown (via addCommand).  ￼
+	•	Command Palette entry: Ink2Markdown: Capture images then convert (via addCommand).
 
-6.2 Progress UI
+6.2 Capture UI
+
+A modal containing:
+	•	Title and short instructions
+	•	“Take photo” button (opens camera/file picker)
+	•	“Done” button (finishes capture and starts conversion)
+	•	“Cancel” button (closes capture without conversion)
+	•	Status line showing capture count
+
+6.3 Progress UI
 
 A modal (or notice panel) containing:
 	•	Progress bar: 0–100%
@@ -158,16 +188,17 @@ A modal (or notice panel) containing:
 	•	“Final formatting cleanup…”
 	•	Cancel button
 
-6.3 Completion
+6.4 Completion
 	•	Success notice: “Inserted Markdown transcription at top of note.”
 	•	Cursor/scroll behavior (default): leave view where user was; do not auto-jump.
 
-6.4 Error messaging
+6.5 Error messaging
 	•	Clear, actionable errors:
 	•	Missing API key / endpoint / deployment name
 	•	Unsupported image format
 	•	Provider error (surface HTTP status + brief message)
 	•	“No embedded images found in note”
+	•	“Open a note to capture images”
 
 ⸻
 

@@ -14,8 +14,20 @@
   height: 16px;
 }
 
-.ink2markdown-disclosure .ink2markdown-buttons {
+.ink2markdown-buttons {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.ink2markdown-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.ink2markdown-capture-status {
+  font-size: 0.95em;
 }

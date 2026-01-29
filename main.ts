@@ -31,6 +31,11 @@ interface Prompts {
   cleanupPrompt: string;
 }
 
+interface CaptureResult {
+  status: "done" | "cancel";
+  count: number;
+}
+
 const DEFAULT_SYSTEM_PROMPT =
   "Role: You are an OCR + formatting engine. Your job is to transcribe handwritten/printed notes into valid Obsidian-compatible Markdown with maximum accuracy. Output only Markdown. Do not add commentary.";
 
@@ -240,6 +245,153 @@ class PrivacyModal extends Modal {
     }
     this.resolved = true;
     this.resolve(accepted);
+    this.close();
+  }
+}
+
+class CaptureModal extends Modal {
+  private resolve: (result: CaptureResult) => void;
+  private onCapture: (file: File, index: number) => Promise<void>;
+  private resolved = false;
+  private captured = 0;
+  private processing = false;
+  private statusEl!: HTMLElement;
+  private takeButton!: HTMLButtonElement;
+  private doneButton!: HTMLButtonElement;
+  private cancelButton!: HTMLButtonElement;
+
+  constructor(
+    app: App,
+    onCapture: (file: File, index: number) => Promise<void>,
+    resolve: (result: CaptureResult) => void
+  ) {
+    super(app);
+    this.onCapture = onCapture;
+    this.resolve = resolve;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("ink2markdown-capture");
+
+    contentEl.createEl("h2", { text: "Capture note pages" });
+    contentEl.createEl("p", {
+      text: "Photos will be added to the bottom of the current note."
+    });
+
+    this.statusEl = contentEl.createEl("div", {
+      cls: "ink2markdown-capture-status",
+      text: "No photos captured yet."
+    });
+
+    const buttonRow = contentEl.createEl("div", { cls: "ink2markdown-buttons" });
+    this.takeButton = buttonRow.createEl("button", {
+      text: "Take photo",
+      cls: "mod-cta"
+    });
+    this.doneButton = buttonRow.createEl("button", { text: "Done" });
+    this.cancelButton = buttonRow.createEl("button", { text: "Cancel" });
+
+    this.takeButton.addEventListener("click", () => {
+      if (!this.processing) {
+        this.startCapture();
+      }
+    });
+
+    this.doneButton.addEventListener("click", () => {
+      this.finish("done");
+    });
+
+    this.cancelButton.addEventListener("click", () => {
+      this.finish("cancel");
+    });
+
+    window.setTimeout(() => {
+      if (!this.processing) {
+        this.startCapture();
+      }
+    }, 0);
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.resolved) {
+      this.finish("cancel");
+    }
+  }
+
+  private startCapture(): void {
+    const inputEl = this.contentEl.createEl("input") as HTMLInputElement;
+    inputEl.type = "file";
+    inputEl.accept = "image/*";
+    inputEl.setAttribute("capture", "environment");
+    inputEl.style.display = "none";
+
+    inputEl.addEventListener("change", () => {
+      void this.handleSelection(inputEl);
+    });
+
+    try {
+      inputEl.click();
+    } catch {
+      inputEl.remove();
+    }
+  }
+
+  private async handleSelection(inputEl: HTMLInputElement): Promise<void> {
+    if (this.processing) {
+      inputEl.remove();
+      return;
+    }
+
+    const file = inputEl.files?.[0];
+    inputEl.value = "";
+    inputEl.remove();
+
+    if (!file) {
+      return;
+    }
+
+    this.processing = true;
+    this.setButtonsDisabled(true);
+    this.setStatus("Saving photo...");
+
+    try {
+      await this.onCapture(file, this.captured + 1);
+      this.captured += 1;
+      this.setStatus(
+        `${this.captured} photo${this.captured === 1 ? "" : "s"} captured.`
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Failed to save photo.";
+      new Notice(message);
+      this.setStatus("Could not save that photo.");
+    } finally {
+      this.processing = false;
+      this.setButtonsDisabled(false);
+    }
+  }
+
+  private setButtonsDisabled(disabled: boolean): void {
+    this.takeButton.disabled = disabled;
+    this.doneButton.disabled = disabled;
+    this.cancelButton.disabled = disabled;
+  }
+
+  private setStatus(text: string): void {
+    this.statusEl.setText(text);
+  }
+
+  private finish(status: CaptureResult["status"]): void {
+    if (this.resolved) {
+      return;
+    }
+
+    this.resolved = true;
+    this.resolve({ status, count: this.captured });
     this.close();
   }
 }
@@ -476,16 +628,26 @@ export default class Ink2MarkdownPlugin extends Plugin {
       callback: () => this.runConversion()
     });
 
+    this.addCommand({
+      id: "ink2markdown-capture-and-convert",
+      name: "Ink2Markdown: Capture images then convert",
+      callback: () => this.runCaptureAndConvert()
+    });
+
     this.addSettingTab(new Ink2MarkdownSettingTab(this.app, this));
   }
 
   async runConversion(): Promise<void> {
     const file = this.app.workspace.getActiveFile();
-    if (!file) {
+    if (!file || file.extension !== "md") {
       new Notice("No active note found.");
       return;
     }
 
+    await this.runConversionForFile(file);
+  }
+
+  private async runConversionForFile(file: TFile): Promise<void> {
     const noteText = await this.app.vault.read(file);
     const embeds = findImageEmbeds(noteText);
 
@@ -563,6 +725,33 @@ export default class Ink2MarkdownPlugin extends Plugin {
     }
   }
 
+  private async runCaptureAndConvert(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "md") {
+      new Notice("Open a note to capture images.");
+      return;
+    }
+
+    const result = await new Promise<CaptureResult>((resolve) => {
+      new CaptureModal(
+        this.app,
+        (capture, index) => this.saveAndEmbedCapture(file, capture, index),
+        resolve
+      ).open();
+    });
+
+    if (result.status !== "done") {
+      return;
+    }
+
+    if (result.count === 0) {
+      new Notice("No photos captured.");
+      return;
+    }
+
+    await this.runConversionForFile(file);
+  }
+
   async loadSettings(): Promise<void> {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
@@ -613,6 +802,28 @@ export default class Ink2MarkdownPlugin extends Plugin {
     const data = await this.app.vault.readBinary(file);
     const base64 = arrayBufferToBase64(data);
     return `data:${mime};base64,${base64}`;
+  }
+
+  private async saveAndEmbedCapture(
+    noteFile: TFile,
+    capture: File,
+    index: number
+  ): Promise<void> {
+    const extension = getCaptureExtension(capture);
+    const timestamp = formatTimestampForFilename(new Date());
+    const filename = `Ink Capture ${timestamp}-${String(index).padStart(2, "0")}.${extension}`;
+    const attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(
+      filename,
+      noteFile.path
+    );
+
+    const buffer = await capture.arrayBuffer();
+    const attachment = await this.app.vault.createBinary(attachmentPath, buffer);
+    const link = this.app.fileManager.generateMarkdownLink(attachment, noteFile.path);
+    const embed = link.startsWith("!") ? link : `!${link}`;
+    const noteText = await this.app.vault.read(noteFile);
+    const updated = appendAtEnd(noteText, embed);
+    await this.app.vault.modify(noteFile, updated);
   }
 
   async testConnection(): Promise<void> {
@@ -1247,4 +1458,66 @@ function formatError(error: unknown): string {
   }
 
   return "Unexpected error.";
+}
+
+function formatTimestampForFilename(date: Date): string {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}${minutes}${seconds}`;
+}
+
+function getCaptureExtension(file: File): string {
+  const name = file.name?.trim();
+  if (name && name.includes(".")) {
+    const ext = name.split(".").pop();
+    if (ext) {
+      return ext.toLowerCase();
+    }
+  }
+
+  const type = file.type?.toLowerCase();
+  switch (type) {
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    case "image/heic":
+      return "heic";
+    case "image/heif":
+      return "heif";
+    case "image/tiff":
+      return "tiff";
+    case "image/bmp":
+      return "bmp";
+    default:
+      return "jpg";
+  }
+}
+
+function appendAtEnd(original: string, insertion: string): string {
+  const trimmedInsertion = insertion.trim();
+  if (!trimmedInsertion) {
+    return original;
+  }
+
+  if (!original) {
+    return `${trimmedInsertion}\n`;
+  }
+
+  let separator = "\n";
+  if (original.endsWith("\n\n")) {
+    separator = "";
+  } else if (original.endsWith("\n")) {
+    separator = "\n";
+  } else {
+    separator = "\n\n";
+  }
+
+  return `${original}${separator}${trimmedInsertion}\n`;
 }
