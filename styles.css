@@ -21,6 +21,15 @@
   flex-wrap: wrap;
 }
 
+.ink2markdown-capture .ink2markdown-buttons {
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.ink2markdown-capture .ink2markdown-buttons button {
+  flex: 1;
+}
+
 .ink2markdown-capture {
   display: flex;
   flex-direction: column;
