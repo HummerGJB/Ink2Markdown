@@ -47,32 +47,31 @@ interface CaptureResult {
 }
 
 const DEFAULT_SYSTEM_PROMPT =
-  "Role: You are an OCR + formatting engine. Your job is to transcribe handwritten/printed notes into valid Obsidian-compatible Markdown with maximum accuracy. Output only Markdown. Do not add commentary.";
+  "Role: You are a transcription engine. Top priority: verbatim accuracy. Transcribe handwritten/printed notes into Obsidian-compatible Markdown. Do not add, remove, or paraphrase content. Output only Markdown.";
 
-const DEFAULT_EXTRACTION_PROMPT = `Task: Transcribe the provided page image into clean, normalized Markdown for Obsidian.
+const DEFAULT_EXTRACTION_PROMPT = `Task: Transcribe the provided page image into Markdown for Obsidian.
+Primary objective: exact transcription of the visible text.
 Rules (follow strictly):
 1. Output only Markdown (no code fences, no explanations).
-2. Normalize: if the author wrote Markdown syntax imperfectly but intent is clear, output the correct Markdown.
-3. Headings: Treat headings when the author wrote leading # marks (#, ##, ###, etc.). Do not infer headings from underlines.
-4. Bullets & numbering: Detect bullet and numbered lists even if written as 1), 1., or 1 etc.
-5. Indentation: Infer nested lists from visual indentation.
+2. Preserve the original wording, spelling, capitalization, punctuation, and line breaks as written.
+3. Use Markdown syntax only when it is explicitly written or drawn (e.g., leading # for headings, bullet characters -, *, •, numbered list markers like 1. or 1), checkboxes [ ]/[x] or drawn boxes, ==highlight==).
+4. Headings: Only when the author wrote leading # marks. Do not infer headings from underlines, layout, or size.
+5. Lists: Only create list items when a bullet/number is explicitly present; use indentation only when it is clearly present in the handwriting.
 6. Checkboxes: Treat drawn checkboxes or [ ] / [x] as Markdown task items (- [ ] / - [x]).
 7. Highlights: Preserve ==highlight== syntax only when the author explicitly wrote ==...==.
 8. Horizontal rules: A straight line spanning at least ~50% of the page width should become a Markdown horizontal rule: ---.
-9. Line breaks: Prefer semantic paragraphs; do not preserve arbitrary line breaks from handwriting if it’s clearly the same sentence.
-10. Illegible text: If any word/phrase is unreadable, insert exactly ==ILLEGIBLE== in its place.
-11. No extras: Do not invent tags, links, callouts, or tables. Do not summarize.`;
+9. Illegible text: If any word/phrase is unreadable, insert exactly ==ILLEGIBLE== in its place.
+10. No extras: Do not invent tags, links, callouts, or tables. Do not summarize.`;
 
 const DEFAULT_CLEANUP_PROMPT = `You will be given multiple chunks of Markdown transcribed from sequential pages of the same note.
-Goal: Produce a single, continuous, cleaned-up Markdown note with consistent formatting.
+Goal: Produce a single, continuous Markdown note while preserving transcription accuracy.
 Rules:
 1. Only output Markdown.
-2. Preserve the author’s wording. You may correct obvious OCR mistakes only when the surrounding context makes the correction highly confident.
-3. Fix list continuity, indentation, and numbering.
-4. Merge sentences split across page boundaries.
-5. Prefer semantic paragraphs.
-6. Do not add page separators.
-7. Preserve ==ILLEGIBLE== markers as-is.`;
+2. Do not change wording, spelling, capitalization, or punctuation. Do not correct OCR mistakes.
+3. Preserve line breaks unless a sentence is clearly split across page boundaries; if you join, do not alter words.
+4. Fix list continuity, indentation, and numbering only when list markers already exist.
+5. Do not add page separators.
+6. Preserve ==ILLEGIBLE== markers as-is.`;
 
 const DEFAULT_TITLE_PROMPT = `You generate concise, descriptive note titles.
 Given the full note content, return a short title (3-6 words) that captures the main topic.
