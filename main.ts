@@ -5,7 +5,8 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
-  TFile
+  TFile,
+  requestUrl
 } from "obsidian";
 
 type ProviderType = "openai" | "azure";
@@ -1073,26 +1074,45 @@ async function fetchJson(
   token: CancellationToken,
   provider: ProviderType
 ): Promise<any> {
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  token.register(controller);
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    const response = await fetch(url, {
-      ...init,
-      signal: controller.signal
-    });
+    if (token.cancelled) {
+      throw new CancelledError();
+    }
 
-    if (!response.ok) {
-      const message = await safeReadErrorMessage(response);
+    const headers = normalizeHeaders(init.headers);
+    const body = typeof init.body === "string" ? init.body : init.body ? String(init.body) : undefined;
+
+    const response = await Promise.race([
+      requestUrl({
+        url,
+        method: init.method ?? "GET",
+        headers,
+        body,
+        throw: false
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new ProviderError(provider, "Request timed out."));
+        }, REQUEST_TIMEOUT_MS);
+      })
+    ]);
+
+    if (token.cancelled) {
+      throw new CancelledError();
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      const message = extractErrorMessage(response.json) ?? extractErrorMessage(parseJson(response.text));
       throw new ProviderError(
         provider,
-        message || `${provider.toUpperCase()} error (${response.status}).`,
+        message ?? `${provider.toUpperCase()} error (${response.status}).`,
         response.status
       );
     }
 
-    return await response.json();
+    return response.json ?? parseJson(response.text);
   } catch (error) {
     if (token.cancelled) {
       throw new CancelledError();
@@ -1100,29 +1120,56 @@ async function fetchJson(
     if (error instanceof ProviderError) {
       throw error;
     }
-    if ((error as Error).name === "AbortError") {
+    if (error instanceof Error && /timed out|timeout/i.test(error.message)) {
       throw new ProviderError(provider, "Request timed out.");
     }
     throw new ProviderError(provider, "Network error while contacting provider.");
   } finally {
-    globalThis.clearTimeout(timeout);
-    token.unregister(controller);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 }
 
-async function safeReadErrorMessage(response: Response): Promise<string | null> {
+function parseJson(text: string | null | undefined): any | null {
+  if (!text) {
+    return null;
+  }
   try {
-    const data = await response.json();
-    if (data?.error?.message) {
-      return data.error.message;
-    }
-    if (data?.message) {
-      return data.message;
-    }
+    return JSON.parse(text);
   } catch {
     return null;
   }
+}
+
+function extractErrorMessage(data: any): string | null {
+  if (!data) {
+    return null;
+  }
+  if (data?.error?.message) {
+    return data.error.message;
+  }
+  if (data?.message) {
+    return data.message;
+  }
   return null;
+}
+
+function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+  if (headers instanceof Headers) {
+    const result: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      result[key] = value;
+    });
+    return result;
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return headers as Record<string, string>;
 }
 
 function isRetryableStatus(status?: number): boolean {
