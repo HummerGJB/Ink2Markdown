@@ -302,12 +302,12 @@ class CaptureModal extends Modal {
     });
 
     const buttonRow = contentEl.createEl("div", { cls: "ink2markdown-buttons" });
+    this.cancelButton = buttonRow.createEl("button", { text: "Cancel" });
     this.takeButton = buttonRow.createEl("button", {
       text: "Take photo",
       cls: "mod-cta"
     });
     this.doneButton = buttonRow.createEl("button", { text: "Done" });
-    this.cancelButton = buttonRow.createEl("button", { text: "Cancel" });
 
     this.takeButton.addEventListener("click", () => {
       if (!this.processing) {
