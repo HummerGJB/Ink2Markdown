@@ -11,26 +11,18 @@ import {
 
 type ProviderType = "openai" | "azure";
 
-interface OpenAISettings {
-  apiKey: string;
-  model: string;
-}
-
-interface AzureSettings {
-  endpoint: string;
-  deployment: string;
-  apiVersion: string;
-  apiKey: string;
-}
-
 interface Ink2MarkdownSettings {
   provider: ProviderType;
   systemPrompt: string;
   extractionPrompt: string;
   cleanupPrompt: string;
   titlePrompt: string;
-  openai: OpenAISettings;
-  azure: AzureSettings;
+  openaiApiKey: string;
+  openaiModel: string;
+  azureEndpoint: string;
+  azureDeployment: string;
+  azureApiVersion: string;
+  azureApiKey: string;
   privacyAcceptedAt?: number;
 }
 
@@ -116,16 +108,12 @@ const DEFAULT_SETTINGS: Ink2MarkdownSettings = {
   extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
   cleanupPrompt: DEFAULT_CLEANUP_PROMPT,
   titlePrompt: DEFAULT_TITLE_PROMPT,
-  openai: {
-    apiKey: "",
-    model: "gpt-5.2"
-  },
-  azure: {
-    endpoint: "",
-    deployment: "",
-    apiVersion: "",
-    apiKey: ""
-  }
+  openaiApiKey: "",
+  openaiModel: "gpt-5.2",
+  azureEndpoint: "",
+  azureDeployment: "",
+  azureApiVersion: "",
+  azureApiKey: ""
 };
 
 const DEFAULT_CONCURRENCY = 3;
@@ -470,8 +458,8 @@ class OpenAIProvider implements ProviderAdapter {
   private model: string;
 
   constructor(settings: Ink2MarkdownSettings) {
-    this.apiKey = settings.openai.apiKey.trim();
-    this.model = settings.openai.model.trim();
+    this.apiKey = settings.openaiApiKey.trim();
+    this.model = settings.openaiModel.trim();
   }
 
   async transcribeChunk(
@@ -646,10 +634,10 @@ class AzureOpenAIProvider implements ProviderAdapter {
   private apiKey: string;
 
   constructor(settings: Ink2MarkdownSettings) {
-    this.endpoint = settings.azure.endpoint.trim().replace(/\/+$/, "");
-    this.deployment = settings.azure.deployment.trim();
-    this.apiVersion = settings.azure.apiVersion.trim();
-    this.apiKey = settings.azure.apiKey.trim();
+    this.endpoint = settings.azureEndpoint.trim().replace(/\/+$/, "");
+    this.deployment = settings.azureDeployment.trim();
+    this.apiVersion = settings.azureApiVersion.trim();
+    this.apiKey = settings.azureApiKey.trim();
   }
 
   async transcribeChunk(
@@ -966,35 +954,7 @@ export default class Ink2MarkdownPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const loaded = await this.loadData();
-    const openai = {
-      apiKey:
-        loaded?.openai?.apiKey ??
-        loaded?.openaiApiKey ??
-        DEFAULT_SETTINGS.openai.apiKey,
-      model:
-        loaded?.openai?.model ??
-        loaded?.openaiModel ??
-        DEFAULT_SETTINGS.openai.model
-    };
-    const azure = {
-      endpoint:
-        loaded?.azure?.endpoint ??
-        loaded?.azureEndpoint ??
-        DEFAULT_SETTINGS.azure.endpoint,
-      deployment:
-        loaded?.azure?.deployment ??
-        loaded?.azureDeployment ??
-        DEFAULT_SETTINGS.azure.deployment,
-      apiVersion:
-        loaded?.azure?.apiVersion ??
-        loaded?.azureApiVersion ??
-        DEFAULT_SETTINGS.azure.apiVersion,
-      apiKey:
-        loaded?.azure?.apiKey ??
-        loaded?.azureApiKey ??
-        DEFAULT_SETTINGS.azure.apiKey
-    };
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, { openai, azure });
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
   }
 
   async saveSettings(): Promise<void> {
@@ -1173,7 +1133,7 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Provider")
-      .setDesc("Choose OpenAI or Azure OpenAI. Each provider's settings are saved separately.")
+      .setDesc("Choose OpenAI or Azure OpenAI.")
       .addDropdown((dropdown) => {
         dropdown
           .addOption("openai", "OpenAI")
@@ -1194,9 +1154,9 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
           text.inputEl.type = "password";
           text
             .setPlaceholder("sk-...")
-            .setValue(this.plugin.settings.openai.apiKey)
+            .setValue(this.plugin.settings.openaiApiKey)
             .onChange(async (value) => {
-              this.plugin.settings.openai.apiKey = value.trim();
+              this.plugin.settings.openaiApiKey = value.trim();
               await this.plugin.saveSettings();
             });
         });
@@ -1208,8 +1168,8 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
           for (const model of OPENAI_MODELS) {
             dropdown.addOption(model, model);
           }
-          dropdown.setValue(this.plugin.settings.openai.model).onChange(async (value) => {
-            this.plugin.settings.openai.model = value;
+          dropdown.setValue(this.plugin.settings.openaiModel).onChange(async (value) => {
+            this.plugin.settings.openaiModel = value;
             await this.plugin.saveSettings();
           });
         });
@@ -1222,9 +1182,9 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
         .addText((text) => {
           text
             .setPlaceholder("https://example.openai.azure.com")
-            .setValue(this.plugin.settings.azure.endpoint)
+            .setValue(this.plugin.settings.azureEndpoint)
             .onChange(async (value) => {
-              this.plugin.settings.azure.endpoint = value.trim();
+              this.plugin.settings.azureEndpoint = value.trim();
               await this.plugin.saveSettings();
             });
         });
@@ -1235,9 +1195,9 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
         .addText((text) => {
           text
             .setPlaceholder("deployment-name")
-            .setValue(this.plugin.settings.azure.deployment)
+            .setValue(this.plugin.settings.azureDeployment)
             .onChange(async (value) => {
-              this.plugin.settings.azure.deployment = value.trim();
+              this.plugin.settings.azureDeployment = value.trim();
               await this.plugin.saveSettings();
             });
         });
@@ -1248,9 +1208,9 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
         .addText((text) => {
           text
             .setPlaceholder("2024-02-15-preview")
-            .setValue(this.plugin.settings.azure.apiVersion)
+            .setValue(this.plugin.settings.azureApiVersion)
             .onChange(async (value) => {
-              this.plugin.settings.azure.apiVersion = value.trim();
+              this.plugin.settings.azureApiVersion = value.trim();
               await this.plugin.saveSettings();
             });
         });
@@ -1262,9 +1222,9 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
           text.inputEl.type = "password";
           text
             .setPlaceholder("azure-key")
-            .setValue(this.plugin.settings.azure.apiKey)
+            .setValue(this.plugin.settings.azureApiKey)
             .onChange(async (value) => {
-              this.plugin.settings.azure.apiKey = value.trim();
+              this.plugin.settings.azureApiKey = value.trim();
               await this.plugin.saveSettings();
             });
         });
@@ -1410,23 +1370,23 @@ function addPromptSetting(
 
 function validateSettings(settings: Ink2MarkdownSettings): string | null {
   if (settings.provider === "openai") {
-    if (!settings.openai.apiKey.trim()) {
+    if (!settings.openaiApiKey.trim()) {
       return "Missing OpenAI API key.";
     }
-    if (!settings.openai.model.trim()) {
+    if (!settings.openaiModel.trim()) {
       return "Missing OpenAI model selection.";
     }
   } else {
-    if (!settings.azure.endpoint.trim()) {
+    if (!settings.azureEndpoint.trim()) {
       return "Missing Azure endpoint.";
     }
-    if (!settings.azure.deployment.trim()) {
+    if (!settings.azureDeployment.trim()) {
       return "Missing Azure deployment name.";
     }
-    if (!settings.azure.apiVersion.trim()) {
+    if (!settings.azureApiVersion.trim()) {
       return "Missing Azure API version.";
     }
-    if (!settings.azure.apiKey.trim()) {
+    if (!settings.azureApiKey.trim()) {
       return "Missing Azure API key.";
     }
   }
