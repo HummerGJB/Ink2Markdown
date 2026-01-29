@@ -123,6 +123,10 @@ FR-16: Images remain in place below inserted text (no moving/removal).
 
 FR-17: When the model cannot confidently read a word/phrase, it must output ==ILLEGIBLE== exactly (caps + highlight). (The prompts will enforce this.)
 
+5.7.1 Horizontal rules
+
+FR-20: A straight line spanning at least ~50% of the page width should be converted to a Markdown horizontal rule (---).
+
 5.8 Failure policy (all-or-nothing)
 
 FR-18: If any page extraction fails (API error, timeout, parse issues), the run:
@@ -224,14 +228,15 @@ Task: Transcribe the provided page image into clean, normalized Markdown for Obs
 Rules (follow strictly):
 	1.	Output only Markdown (no code fences, no explanations).
 	2.	Normalize: if the author wrote Markdown syntax imperfectly but intent is clear, output the correct Markdown.
-	3.	Headings: Treat headings when the author wrote leading # marks (#, ##, ###, etc.). Also treat underlined text as headings: 1 underline = #, 2 underlines = ##, 3 underlines = ###, 4 underlines = ####, 5 underlines = #####.
+	3.	Headings: Treat headings when the author wrote leading # marks (#, ##, ###, etc.). Do not infer headings from underlines.
 	4.	Bullets & numbering: Detect bullet and numbered lists even if written as 1), 1., or 1 etc.
 	5.	Indentation: Infer nested lists from visual indentation.
 	6.	Checkboxes: Treat drawn checkboxes or [ ] / [x] as Markdown task items (- [ ] / - [x]).
-	7.	Boxes: Any text enclosed by a drawn box should be highlighted in yellow using ==highlight==. If a boxed highlight spans multiple lines, treat consecutive boxed lines as one continuous highlighted span (merge into a single ==...==).
-	8.	Line breaks: Prefer semantic paragraphs; do not preserve arbitrary line breaks from handwriting if it’s clearly the same sentence.
-	9.	Illegible text: If any word/phrase is unreadable, insert exactly ==ILLEGIBLE== in its place.
-	10.	No extras: Do not invent tags, links, callouts, or tables. Do not summarize.
+	7.	Highlights: Preserve ==highlight== syntax only when the author explicitly wrote ==...==.
+	8.	Horizontal rules: A straight line spanning at least ~50% of the page width should become a Markdown horizontal rule: ---.
+	9.	Line breaks: Prefer semantic paragraphs; do not preserve arbitrary line breaks from handwriting if it’s clearly the same sentence.
+	10.	Illegible text: If any word/phrase is unreadable, insert exactly ==ILLEGIBLE== in its place.
+	11.	No extras: Do not invent tags, links, callouts, or tables. Do not summarize.
 
 9.3 Default Cleanup Prompt (editable)
 
