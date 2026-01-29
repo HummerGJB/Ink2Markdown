@@ -250,6 +250,7 @@ interface ProviderAdapter {
     token: CancellationToken
   ): Promise<string>;
   cleanup(markdown: string, prompts: Prompts, token: CancellationToken): Promise<string>;
+  testConnection(token: CancellationToken): Promise<void>;
 }
 
 class OpenAIProvider implements ProviderAdapter {
@@ -331,6 +332,27 @@ class OpenAIProvider implements ProviderAdapter {
     );
 
     return extractOpenAIOutputText(response);
+  }
+
+  async testConnection(token: CancellationToken): Promise<void> {
+    const body = {
+      model: this.model,
+      input: "ping"
+    };
+
+    await fetchWithRetry(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "openai"
+    );
   }
 }
 
@@ -416,6 +438,28 @@ class AzureOpenAIProvider implements ProviderAdapter {
     );
 
     return extractAzureOutputText(response);
+  }
+
+  async testConnection(token: CancellationToken): Promise<void> {
+    const body = {
+      messages: [{ role: "user", content: "ping" }]
+    };
+
+    await fetchWithRetry(
+      `${this.endpoint}/openai/deployments/${encodeURIComponent(
+        this.deployment
+      )}/chat/completions?api-version=${encodeURIComponent(this.apiVersion)}`,
+      {
+        method: "POST",
+        headers: {
+          "api-key": this.apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "azure"
+    );
   }
 }
 
@@ -569,6 +613,28 @@ export default class Ink2MarkdownPlugin extends Plugin {
     const base64 = arrayBufferToBase64(data);
     return `data:${mime};base64,${base64}`;
   }
+
+  async testConnection(): Promise<void> {
+    const configError = validateSettings(this.settings);
+    if (configError) {
+      new Notice(configError);
+      return;
+    }
+
+    const provider: ProviderAdapter =
+      this.settings.provider === "openai"
+        ? new OpenAIProvider(this.settings)
+        : new AzureOpenAIProvider(this.settings);
+
+    const token = new CancellationToken();
+
+    try {
+      await provider.testConnection(token);
+      new Notice("Connection successful.");
+    } catch (error) {
+      new Notice(formatError(error));
+    }
+  }
 }
 
 class Ink2MarkdownSettingTab extends PluginSettingTab {
@@ -683,6 +749,19 @@ class Ink2MarkdownSettingTab extends PluginSettingTab {
             });
         });
     }
+
+    new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("Validate your current provider credentials and settings.")
+      .addButton((button) => {
+        button.setButtonText("Test connection").onClick(async () => {
+          button.setDisabled(true);
+          button.setButtonText("Testing...");
+          await this.plugin.testConnection();
+          button.setButtonText("Test connection");
+          button.setDisabled(false);
+        });
+      });
 
     containerEl.createEl("h3", { text: "Prompts" });
 
