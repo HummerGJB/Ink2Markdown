@@ -77,6 +77,24 @@ const DEFAULT_TITLE_PROMPT = `You generate concise, descriptive note titles.
 Given the full note content, return a short title (3-6 words) that captures the main topic.
 Output only the title text with no quotes, no punctuation at the end, and no extra commentary.`;
 
+const CHUNK_HEIGHT_PX = 900;
+const CHUNK_OVERLAP_PX = 200;
+const MIN_OVERLAP_LINES = 2;
+
+const CHUNK_PREAMBLE = `You are given a cropped horizontal slice of a page image.
+Transcribe only the text visible in this slice.
+Do not invent or merge text from other slices.
+Preserve line breaks exactly as written in this slice.`;
+
+const VERIFICATION_PROMPT = `You are given an image region and a draft transcription.
+The next text input is the draft transcription for this same image region.
+Compare the draft against the image and output a corrected version.
+Only correct characters you can clearly see.
+If unsure about a word, keep the draft text.
+If a word is unreadable, replace it with ==ILLEGIBLE==.
+Preserve line breaks and Markdown exactly.
+Output only Markdown.`;
+
 const OPENAI_MODELS = [
   "gpt-5.2",
   "gpt-5.2-pro",
@@ -425,9 +443,17 @@ class CaptureModal extends Modal {
 }
 
 interface ProviderAdapter {
-  transcribePage(
+  transcribeChunk(
     imageDataUrl: string,
-    prompts: Prompts,
+    systemPrompt: string,
+    prompt: string,
+    token: CancellationToken
+  ): Promise<string>;
+  verifyChunk(
+    imageDataUrl: string,
+    systemPrompt: string,
+    prompt: string,
+    draft: string,
     token: CancellationToken
   ): Promise<string>;
   cleanup(markdown: string, prompts: Prompts, token: CancellationToken): Promise<string>;
@@ -444,19 +470,61 @@ class OpenAIProvider implements ProviderAdapter {
     this.model = settings.openai.model.trim();
   }
 
-  async transcribePage(
+  async transcribeChunk(
     imageDataUrl: string,
-    prompts: Prompts,
+    systemPrompt: string,
+    prompt: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
       model: this.model,
-      instructions: prompts.systemPrompt,
+      instructions: systemPrompt,
+      temperature: 0,
       input: [
         {
           role: "user",
           content: [
-            { type: "input_text", text: prompts.extractionPrompt },
+            { type: "input_text", text: prompt },
+            { type: "input_image", image_url: imageDataUrl }
+          ]
+        }
+      ]
+    };
+
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "openai"
+    );
+
+    return extractOpenAIOutputText(response);
+  }
+
+  async verifyChunk(
+    imageDataUrl: string,
+    systemPrompt: string,
+    prompt: string,
+    draft: string,
+    token: CancellationToken
+  ): Promise<string> {
+    const body = {
+      model: this.model,
+      instructions: systemPrompt,
+      temperature: 0,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: prompt },
+            { type: "input_text", text: draft },
             { type: "input_image", image_url: imageDataUrl }
           ]
         }
@@ -580,18 +648,61 @@ class AzureOpenAIProvider implements ProviderAdapter {
     this.apiKey = settings.azure.apiKey.trim();
   }
 
-  async transcribePage(
+  async transcribeChunk(
     imageDataUrl: string,
-    prompts: Prompts,
+    systemPrompt: string,
+    prompt: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
+      temperature: 0,
       messages: [
-        { role: "system", content: prompts.systemPrompt },
+        { role: "system", content: systemPrompt },
         {
           role: "user",
           content: [
-            { type: "text", text: prompts.extractionPrompt },
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageDataUrl } }
+          ]
+        }
+      ]
+    };
+
+    const response = await fetchWithRetry(
+      `${this.endpoint}/openai/deployments/${encodeURIComponent(
+        this.deployment
+      )}/chat/completions?api-version=${encodeURIComponent(this.apiVersion)}`,
+      {
+        method: "POST",
+        headers: {
+          "api-key": this.apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      },
+      token,
+      "azure"
+    );
+
+    return extractAzureOutputText(response);
+  }
+
+  async verifyChunk(
+    imageDataUrl: string,
+    systemPrompt: string,
+    prompt: string,
+    draft: string,
+    token: CancellationToken
+  ): Promise<string> {
+    const body = {
+      temperature: 0,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "text", text: draft },
             { type: "image_url", image_url: { url: imageDataUrl } }
           ]
         }
@@ -781,7 +892,12 @@ export default class Ink2MarkdownPlugin extends Plugin {
 
         progressModal.setStatus(`Processing image ${index + 1} of ${embeds.length}...`);
         const imageDataUrl = await this.loadImageDataUrl(file, embed.linkpath);
-        const markdown = await provider.transcribePage(imageDataUrl, prompts, token);
+        const markdown = await transcribeImageWithChunks(
+          imageDataUrl,
+          provider,
+          prompts,
+          token
+        );
         completed += 1;
         progressModal.setProgress(completed);
         return markdown;
@@ -793,20 +909,19 @@ export default class Ink2MarkdownPlugin extends Plugin {
         throw new CancelledError();
       }
 
-      progressModal.setStatus("Final formatting cleanup...");
+      progressModal.setStatus("Finalizing transcription...");
       const combined = pageMarkdown.join("\n\n");
-      const cleaned = await provider.cleanup(combined, prompts, token);
 
       if (token.cancelled) {
         throw new CancelledError();
       }
 
-      const updated = insertBelowFrontmatter(noteText, cleaned.trimEnd());
+      const updated = insertBelowFrontmatter(noteText, combined.trimEnd());
       await this.app.vault.modify(file, updated);
 
       progressModal.close();
       new Notice("Inserted Markdown transcription at top of note.");
-      return cleaned.trim();
+      return combined.trim();
     } catch (error) {
       token.cancel();
       progressModal.close();
@@ -1417,6 +1532,161 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+function buildChunkPrompt(basePrompt: string): string {
+  const trimmedBase = basePrompt.trim();
+  return trimmedBase ? `${CHUNK_PREAMBLE}\n\n${trimmedBase}` : CHUNK_PREAMBLE;
+}
+
+async function transcribeImageWithChunks(
+  imageDataUrl: string,
+  provider: ProviderAdapter,
+  prompts: Prompts,
+  token: CancellationToken
+): Promise<string> {
+  const chunks = await sliceImageIntoChunks(imageDataUrl, CHUNK_HEIGHT_PX, CHUNK_OVERLAP_PX);
+  const prompt = buildChunkPrompt(prompts.extractionPrompt);
+  const results: string[] = [];
+
+  for (const chunk of chunks) {
+    if (token.cancelled) {
+      throw new CancelledError();
+    }
+
+    const draft = await provider.transcribeChunk(
+      chunk,
+      prompts.systemPrompt,
+      prompt,
+      token
+    );
+
+    if (token.cancelled) {
+      throw new CancelledError();
+    }
+
+    const verified = await provider.verifyChunk(
+      chunk,
+      prompts.systemPrompt,
+      VERIFICATION_PROMPT,
+      draft,
+      token
+    );
+
+    results.push(verified.trimEnd());
+  }
+
+  return mergeChunkOutputs(results).trimEnd();
+}
+
+async function sliceImageIntoChunks(
+  imageDataUrl: string,
+  chunkHeight: number,
+  overlap: number
+): Promise<string[]> {
+  const img = await loadImageElement(imageDataUrl);
+  const width = img.naturalWidth || img.width;
+  const height = img.naturalHeight || img.height;
+
+  if (height <= chunkHeight || chunkHeight <= 0) {
+    return [imageDataUrl];
+  }
+
+  const chunks: string[] = [];
+  const stride = Math.max(1, chunkHeight - overlap);
+
+  for (let y = 0; y < height; y += stride) {
+    const sliceHeight = Math.min(chunkHeight, height - y);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = sliceHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Could not create canvas context for chunking.");
+    }
+    ctx.drawImage(img, 0, y, width, sliceHeight, 0, 0, width, sliceHeight);
+    chunks.push(canvas.toDataURL("image/png"));
+    if (y + sliceHeight >= height) {
+      break;
+    }
+  }
+
+  return chunks;
+}
+
+function loadImageElement(imageDataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load image for chunking."));
+    img.src = imageDataUrl;
+  });
+}
+
+function mergeChunkOutputs(chunks: string[]): string {
+  const nonEmpty = chunks.filter((chunk) => chunk.trim().length > 0);
+  if (nonEmpty.length === 0) {
+    return "";
+  }
+
+  let merged = nonEmpty[0];
+  for (let i = 1; i < nonEmpty.length; i += 1) {
+    merged = mergeTwoChunks(merged, nonEmpty[i]);
+  }
+  return merged;
+}
+
+function mergeTwoChunks(previous: string, next: string): string {
+  if (!previous.trim()) {
+    return next;
+  }
+  if (!next.trim()) {
+    return previous;
+  }
+
+  const previousLines = splitLines(previous);
+  const nextLines = splitLines(next);
+  const overlap = findLineOverlap(previousLines, nextLines);
+  return previousLines.concat(nextLines.slice(overlap)).join("\n");
+}
+
+function splitLines(text: string): string[] {
+  return text.replace(/\r\n/g, "\n").split("\n");
+}
+
+function findLineOverlap(previous: string[], next: string[]): number {
+  const maxOverlap = Math.min(previous.length, next.length);
+  for (let size = maxOverlap; size >= MIN_OVERLAP_LINES; size -= 1) {
+    const prevSlice = previous.slice(previous.length - size);
+    const nextSlice = next.slice(0, size);
+    if (linesMatch(prevSlice, nextSlice)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function linesMatch(previous: string[], next: string[]): boolean {
+  for (let i = 0; i < previous.length; i += 1) {
+    const prevNorm = normalizeLineForMatch(previous[i]);
+    const nextNorm = normalizeLineForMatch(next[i]);
+    if (!isSubstantialLine(prevNorm) || !isSubstantialLine(nextNorm)) {
+      return false;
+    }
+    if (prevNorm !== nextNorm) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeLineForMatch(line: string): string {
+  return line.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function isSubstantialLine(line: string): boolean {
+  const alnumCount = line.replace(/[^a-z0-9]/gi, "").length;
+  return alnumCount >= 3;
 }
 
 async function runWithConcurrency<T>(
