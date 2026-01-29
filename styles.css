@@ -31,3 +31,10 @@
 .ink2markdown-capture-status {
   font-size: 0.95em;
 }
+
+.ink2markdown-capture-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95em;
+}
