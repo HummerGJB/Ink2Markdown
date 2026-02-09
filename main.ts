@@ -69,27 +69,44 @@ const DEFAULT_TITLE_PROMPT = `You generate concise, descriptive note titles.
 Given the full note content, return a short title (3-6 words) that captures the main topic.
 Output only the title text with no quotes, no punctuation at the end, and no extra commentary.`;
 
-const CHUNK_HEIGHT_PX = 900;
-const CHUNK_OVERLAP_PX = 200;
-const MIN_OVERLAP_LINES = 2;
-const OVERLAP_SIMILARITY = 0.92;
-const OVERLAP_ANCHOR_SIMILARITY = 0.97;
-const OVERLAP_ANCHOR_MIN_CHARS = 10;
-const DEDUPE_SIMILARITY = 0.98;
+const LINE_BRIGHTNESS_THRESHOLD = 205;
+const LINE_MIN_INK_PIXELS_RATIO = 0.008;
+const LINE_MIN_HEIGHT_PX = 6;
+const LINE_VERTICAL_PADDING_PX = 8;
+const LINE_MERGE_GAP_PX = 8;
+const LINE_CONSENSUS_SIMILARITY = 0.96;
 
-const CHUNK_PREAMBLE = `You are given a cropped horizontal slice of a page image.
-Transcribe only the text visible in this slice.
-Do not invent or merge text from other slices.
-Preserve line breaks exactly as written in this slice.`;
+const LINE_TRANSCRIPTION_PROMPT_A = `You are given an image of one handwritten text line.
+Transcribe exactly what is written in that line.
+Rules:
+1. Output only the text for this line (no commentary, no code fences).
+2. Preserve wording, spelling, capitalization, punctuation, and symbols exactly.
+3. Preserve explicit Markdown markers if present (#, -, *, [ ], [x], == ==).
+4. Do not infer missing words.
+5. If a token is unreadable, write ==ILLEGIBLE== exactly.`;
 
-const VERIFICATION_PROMPT = `You are given an image region and a draft transcription.
-The next text input is the draft transcription for this same image region.
-Compare the draft against the image and output a corrected version.
-Only correct characters you can clearly see.
-If unsure about a word, keep the draft text.
-If a word is unreadable, replace it with ==ILLEGIBLE==.
-Preserve line breaks and Markdown exactly.
-Output only Markdown.`;
+const LINE_TRANSCRIPTION_PROMPT_B = `Transcribe this handwritten line independently from scratch.
+Rules:
+1. Output only the line text.
+2. Do not paraphrase or normalize.
+3. Keep all visible symbols and Markdown markers exactly.
+4. If uncertain, prefer ==ILLEGIBLE== over guessing.`;
+
+const LINE_JUDGE_PROMPT = `You are given one handwritten line image and two candidate transcriptions.
+Pick the candidate that best matches the image. If both are partially wrong, output a corrected line from the image.
+Rules:
+1. Output only one final line.
+2. Preserve exact wording, spelling, punctuation, and symbols.
+3. Do not add content not visible in the image.
+4. Use ==ILLEGIBLE== for unreadable tokens.`;
+
+const FINAL_FORMAT_PROMPT = `You will be given raw line-by-line transcription text from one page.
+Reformat it into clean Markdown structure while preserving text content.
+Rules:
+1. Do not change, remove, or add any words.
+2. You may only adjust spacing, line breaks, and Markdown markers.
+3. Keep line order unchanged.
+4. Output only Markdown.`;
 
 const OPENAI_MODELS = [
   "gpt-5.2",
@@ -435,20 +452,26 @@ class CaptureModal extends Modal {
 }
 
 interface ProviderAdapter {
-  transcribeChunk(
+  transcribeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
     token: CancellationToken
   ): Promise<string>;
-  verifyChunk(
+  judgeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
-    draft: string,
+    candidateA: string,
+    candidateB: string,
     token: CancellationToken
   ): Promise<string>;
-  cleanup(markdown: string, prompts: Prompts, token: CancellationToken): Promise<string>;
+  formatTranscription(
+    markdown: string,
+    systemPrompt: string,
+    prompt: string,
+    token: CancellationToken
+  ): Promise<string>;
   generateTitle(markdown: string, prompt: string, token: CancellationToken): Promise<string>;
   testConnection(token: CancellationToken): Promise<void>;
 }
@@ -462,7 +485,7 @@ class OpenAIProvider implements ProviderAdapter {
     this.model = settings.openaiModel.trim();
   }
 
-  async transcribeChunk(
+  async transcribeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
@@ -500,11 +523,12 @@ class OpenAIProvider implements ProviderAdapter {
     return extractOpenAIOutputText(response);
   }
 
-  async verifyChunk(
+  async judgeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
-    draft: string,
+    candidateA: string,
+    candidateB: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
@@ -516,7 +540,8 @@ class OpenAIProvider implements ProviderAdapter {
           role: "user",
           content: [
             { type: "input_text", text: prompt },
-            { type: "input_text", text: draft },
+            { type: "input_text", text: `Candidate A:\n${candidateA}` },
+            { type: "input_text", text: `Candidate B:\n${candidateB}` },
             { type: "input_image", image_url: imageDataUrl }
           ]
         }
@@ -540,19 +565,21 @@ class OpenAIProvider implements ProviderAdapter {
     return extractOpenAIOutputText(response);
   }
 
-  async cleanup(
+  async formatTranscription(
     markdown: string,
-    prompts: Prompts,
+    systemPrompt: string,
+    prompt: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
       model: this.model,
-      instructions: prompts.systemPrompt,
+      instructions: systemPrompt,
+      temperature: 0,
       input: [
         {
           role: "user",
           content: [
-            { type: "input_text", text: prompts.cleanupPrompt },
+            { type: "input_text", text: prompt },
             { type: "input_text", text: markdown }
           ]
         }
@@ -640,7 +667,7 @@ class AzureOpenAIProvider implements ProviderAdapter {
     this.apiKey = settings.azureApiKey.trim();
   }
 
-  async transcribeChunk(
+  async transcribeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
@@ -679,11 +706,12 @@ class AzureOpenAIProvider implements ProviderAdapter {
     return extractAzureOutputText(response);
   }
 
-  async verifyChunk(
+  async judgeLine(
     imageDataUrl: string,
     systemPrompt: string,
     prompt: string,
-    draft: string,
+    candidateA: string,
+    candidateB: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
@@ -694,7 +722,8 @@ class AzureOpenAIProvider implements ProviderAdapter {
           role: "user",
           content: [
             { type: "text", text: prompt },
-            { type: "text", text: draft },
+            { type: "text", text: `Candidate A:\n${candidateA}` },
+            { type: "text", text: `Candidate B:\n${candidateB}` },
             { type: "image_url", image_url: { url: imageDataUrl } }
           ]
         }
@@ -720,17 +749,22 @@ class AzureOpenAIProvider implements ProviderAdapter {
     return extractAzureOutputText(response);
   }
 
-  async cleanup(
+  async formatTranscription(
     markdown: string,
-    prompts: Prompts,
+    systemPrompt: string,
+    prompt: string,
     token: CancellationToken
   ): Promise<string> {
     const body = {
+      temperature: 0,
       messages: [
-        { role: "system", content: prompts.systemPrompt },
+        { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: [{ type: "text", text: `${prompts.cleanupPrompt}\n\n${markdown}` }]
+          content: [
+            { type: "text", text: prompt },
+            { type: "text", text: markdown }
+          ]
         }
       ]
     };
@@ -884,7 +918,7 @@ export default class Ink2MarkdownPlugin extends Plugin {
 
         progressModal.setStatus(`Processing image ${index + 1} of ${embeds.length}...`);
         const imageDataUrl = await this.loadImageDataUrl(file, embed.linkpath);
-        const markdown = await transcribeImageWithChunks(
+        const markdown = await transcribeImageByLines(
           imageDataUrl,
           provider,
           prompts,
@@ -1498,165 +1532,295 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function buildChunkPrompt(basePrompt: string): string {
-  const trimmedBase = basePrompt.trim();
-  return trimmedBase ? `${CHUNK_PREAMBLE}\n\n${trimmedBase}` : CHUNK_PREAMBLE;
+interface LineSlice {
+  imageDataUrl: string;
+  top: number;
+  bottom: number;
 }
 
-async function transcribeImageWithChunks(
+interface LineTranscription {
+  text: string;
+  confidence: number;
+  unresolved: boolean;
+}
+
+function buildLinePrompt(basePrompt: string, fixedPrompt: string): string {
+  const trimmed = basePrompt.trim();
+  if (!trimmed) {
+    return fixedPrompt;
+  }
+  return `${fixedPrompt}\n\nAdditional context from app configuration:\n${trimmed}`;
+}
+
+async function transcribeImageByLines(
   imageDataUrl: string,
   provider: ProviderAdapter,
   prompts: Prompts,
   token: CancellationToken
 ): Promise<string> {
-  const chunks = await sliceImageIntoChunks(imageDataUrl, CHUNK_HEIGHT_PX, CHUNK_OVERLAP_PX);
-  const prompt = buildChunkPrompt(prompts.extractionPrompt);
-  const results: string[] = [];
+  const lineSlices = await segmentImageIntoLines(imageDataUrl);
+  const promptA = buildLinePrompt(prompts.extractionPrompt, LINE_TRANSCRIPTION_PROMPT_A);
+  const promptB = buildLinePrompt(prompts.extractionPrompt, LINE_TRANSCRIPTION_PROMPT_B);
+  const formattingPrompt = buildLinePrompt(prompts.cleanupPrompt, FINAL_FORMAT_PROMPT);
+  const lineResults: LineTranscription[] = [];
 
-  for (const chunk of chunks) {
+  for (const lineSlice of lineSlices) {
     if (token.cancelled) {
       throw new CancelledError();
     }
 
-    const draft = await provider.transcribeChunk(
-      chunk,
-      prompts.systemPrompt,
-      prompt,
-      token
+    const candidateA = normalizeLineOutput(
+      await provider.transcribeLine(lineSlice.imageDataUrl, prompts.systemPrompt, promptA, token)
+    );
+    const candidateB = normalizeLineOutput(
+      await provider.transcribeLine(lineSlice.imageDataUrl, prompts.systemPrompt, promptB, token)
     );
 
-    if (token.cancelled) {
-      throw new CancelledError();
+    const similarity = lineSimilarity(candidateA, candidateB);
+    let chosen = "";
+    let confidence = similarity;
+
+    if (similarity >= LINE_CONSENSUS_SIMILARITY) {
+      chosen = pickBetterLine(candidateA, candidateB);
+    } else {
+      chosen = normalizeLineOutput(
+        await provider.judgeLine(
+          lineSlice.imageDataUrl,
+          prompts.systemPrompt,
+          LINE_JUDGE_PROMPT,
+          candidateA,
+          candidateB,
+          token
+        )
+      );
+      if (!chosen) {
+        chosen = pickBetterLine(candidateA, candidateB);
+      }
+      confidence = Math.max(similarity, lineSimilarity(chosen, candidateA), lineSimilarity(chosen, candidateB));
     }
 
-    const verified = await provider.verifyChunk(
-      chunk,
-      prompts.systemPrompt,
-      VERIFICATION_PROMPT,
-      draft,
-      token
-    );
-
-    results.push(verified.trimEnd());
+    if (chosen) {
+      lineResults.push({
+        text: chosen,
+        confidence,
+        unresolved: hasIllegibleToken(chosen)
+      });
+    }
   }
 
-  return mergeChunkOutputs(results).trimEnd();
+  const rawPage = lineResults.map((line) => line.text).join("\n").trimEnd();
+  if (!rawPage) {
+    return "";
+  }
+
+  const formatted = normalizeMultilineOutput(
+    await provider.formatTranscription(
+      rawPage,
+      prompts.systemPrompt,
+      formattingPrompt,
+      token
+    )
+  );
+  if (!formatted) {
+    return rawPage;
+  }
+
+  return preservesWordSequence(rawPage, formatted) ? formatted : rawPage;
 }
 
-async function sliceImageIntoChunks(
-  imageDataUrl: string,
-  chunkHeight: number,
-  overlap: number
-): Promise<string[]> {
+async function segmentImageIntoLines(imageDataUrl: string): Promise<LineSlice[]> {
   const img = await loadImageElement(imageDataUrl);
   const width = img.naturalWidth || img.width;
   const height = img.naturalHeight || img.height;
-
-  if (height <= chunkHeight || chunkHeight <= 0) {
-    return [imageDataUrl];
+  if (width <= 0 || height <= 0) {
+    return [{ imageDataUrl, top: 0, bottom: 0 }];
   }
 
-  const chunks: string[] = [];
-  const stride = Math.max(1, chunkHeight - overlap);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Could not create canvas context for line segmentation.");
+  }
+  ctx.drawImage(img, 0, 0, width, height);
 
-  for (let y = 0; y < height; y += stride) {
-    const sliceHeight = Math.min(chunkHeight, height - y);
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = sliceHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Could not create canvas context for chunking.");
-    }
-    ctx.drawImage(img, 0, y, width, sliceHeight, 0, 0, width, sliceHeight);
-    chunks.push(canvas.toDataURL("image/png"));
-    if (y + sliceHeight >= height) {
-      break;
-    }
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const rows = detectInkRows(imageData, width, height);
+  const spans = findInkSpans(rows, width);
+  if (spans.length === 0) {
+    return [{ imageDataUrl, top: 0, bottom: height }];
   }
 
-  return chunks;
+  const slices: LineSlice[] = [];
+  for (const span of spans) {
+    const top = Math.max(0, span.start - LINE_VERTICAL_PADDING_PX);
+    const bottom = Math.min(height, span.end + LINE_VERTICAL_PADDING_PX);
+    if (bottom - top < LINE_MIN_HEIGHT_PX) {
+      continue;
+    }
+
+    const lineCanvas = document.createElement("canvas");
+    lineCanvas.width = width;
+    lineCanvas.height = bottom - top;
+    const lineCtx = lineCanvas.getContext("2d");
+    if (!lineCtx) {
+      continue;
+    }
+    lineCtx.drawImage(img, 0, top, width, bottom - top, 0, 0, width, bottom - top);
+    slices.push({
+      imageDataUrl: lineCanvas.toDataURL("image/png"),
+      top,
+      bottom
+    });
+  }
+
+  return slices.length > 0 ? slices : [{ imageDataUrl, top: 0, bottom: height }];
 }
 
 function loadImageElement(imageDataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Failed to load image for chunking."));
+    img.onerror = () => reject(new Error("Failed to load image for segmentation."));
     img.src = imageDataUrl;
   });
 }
 
-function mergeChunkOutputs(chunks: string[]): string {
-  const nonEmpty = chunks.filter((chunk) => chunk.trim().length > 0);
-  if (nonEmpty.length === 0) {
-    return "";
+function detectInkRows(imageData: ImageData, width: number, height: number): number[] {
+  const rowInk = new Array<number>(height).fill(0);
+  const data = imageData.data;
+
+  for (let y = 0; y < height; y += 1) {
+    let darkPixels = 0;
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x += 1) {
+      const idx = rowOffset + x * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (brightness <= LINE_BRIGHTNESS_THRESHOLD) {
+        darkPixels += 1;
+      }
+    }
+    rowInk[y] = darkPixels;
   }
 
-  let merged = nonEmpty[0];
-  for (let i = 1; i < nonEmpty.length; i += 1) {
-    merged = mergeTwoChunks(merged, nonEmpty[i]);
-  }
-  const lines = splitLines(merged);
-  return dedupeAdjacentLines(lines).join("\n");
+  return smoothRowInk(rowInk);
 }
 
-function mergeTwoChunks(previous: string, next: string): string {
-  if (!previous.trim()) {
-    return next;
+function smoothRowInk(rows: number[]): number[] {
+  if (rows.length <= 2) {
+    return rows.slice();
   }
-  if (!next.trim()) {
-    return previous;
+  const smoothed = new Array<number>(rows.length);
+  smoothed[0] = rows[0];
+  smoothed[rows.length - 1] = rows[rows.length - 1];
+  for (let i = 1; i < rows.length - 1; i += 1) {
+    smoothed[i] = Math.round((rows[i - 1] + rows[i] + rows[i + 1]) / 3);
   }
-
-  const previousLines = splitLines(previous);
-  const nextLines = splitLines(next);
-  const overlap = findLineOverlap(previousLines, nextLines);
-  if (overlap === 0) {
-    return previousLines.concat(nextLines).join("\n");
-  }
-
-  const head = previousLines.slice(0, previousLines.length - overlap);
-  const mergedOverlap = previousLines
-    .slice(previousLines.length - overlap)
-    .map((line, index) => pickBetterLine(line, nextLines[index]));
-  const tail = nextLines.slice(overlap);
-  return head.concat(mergedOverlap, tail).join("\n");
+  return smoothed;
 }
 
-function splitLines(text: string): string[] {
-  return text.replace(/\r\n/g, "\n").split("\n");
+function findInkSpans(rows: number[], width: number): Array<{ start: number; end: number }> {
+  const minInkPixels = Math.max(6, Math.floor(width * LINE_MIN_INK_PIXELS_RATIO));
+  const spans: Array<{ start: number; end: number }> = [];
+  let start = -1;
+
+  for (let y = 0; y < rows.length; y += 1) {
+    const hasInk = rows[y] >= minInkPixels;
+    if (hasInk && start === -1) {
+      start = y;
+    }
+    if (!hasInk && start !== -1) {
+      spans.push({ start, end: y });
+      start = -1;
+    }
+  }
+
+  if (start !== -1) {
+    spans.push({ start, end: rows.length });
+  }
+
+  const merged = mergeNearbySpans(spans, LINE_MERGE_GAP_PX);
+  return merged.filter((span) => span.end - span.start >= LINE_MIN_HEIGHT_PX);
 }
 
-function findLineOverlap(previous: string[], next: string[]): number {
-  const maxOverlap = Math.min(previous.length, next.length);
-  const minOverlap = Math.min(MIN_OVERLAP_LINES, maxOverlap);
-  for (let size = maxOverlap; size >= minOverlap; size -= 1) {
-    const prevSlice = previous.slice(previous.length - size);
-    const nextSlice = next.slice(0, size);
-    if (!hasAnchorLine(prevSlice, nextSlice)) {
+function mergeNearbySpans(
+  spans: Array<{ start: number; end: number }>,
+  gap: number
+): Array<{ start: number; end: number }> {
+  if (spans.length === 0) {
+    return [];
+  }
+  const merged: Array<{ start: number; end: number }> = [spans[0]];
+  for (let i = 1; i < spans.length; i += 1) {
+    const current = spans[i];
+    const last = merged[merged.length - 1];
+    if (current.start - last.end <= gap) {
+      last.end = Math.max(last.end, current.end);
       continue;
     }
-    if (linesMatch(prevSlice, nextSlice)) {
-      return size;
-    }
+    merged.push({ ...current });
   }
-  return 0;
+  return merged;
 }
 
-function linesMatch(previous: string[], next: string[]): boolean {
-  for (let i = 0; i < previous.length; i += 1) {
-    const prevLine = previous[i];
-    const nextLine = next[i];
-    if (!isSubstantialLine(prevLine) || !isSubstantialLine(nextLine)) {
-      return false;
-    }
-    const similarity = lineSimilarity(prevLine, nextLine);
-    if (similarity < OVERLAP_SIMILARITY) {
+function normalizeLineOutput(text: string): string {
+  const normalized = normalizeMultilineOutput(text);
+  if (!normalized) {
+    return "";
+  }
+  return normalized.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeMultilineOutput(text: string): string {
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+function pickBetterLine(a: string, b: string): string {
+  const aIllegible = countIllegible(a);
+  const bIllegible = countIllegible(b);
+  if (aIllegible !== bIllegible) {
+    return aIllegible < bIllegible ? a : b;
+  }
+  if (a.length !== b.length) {
+    return a.length > b.length ? a : b;
+  }
+  return a;
+}
+
+function hasIllegibleToken(text: string): boolean {
+  return text.includes("==ILLEGIBLE==");
+}
+
+function countIllegible(text: string): number {
+  const matches = text.match(/==ILLEGIBLE==/g);
+  return matches ? matches.length : 0;
+}
+
+function preservesWordSequence(raw: string, formatted: string): boolean {
+  const rawWords = tokenizeWords(raw);
+  const formattedWords = tokenizeWords(formatted);
+  if (rawWords.length !== formattedWords.length) {
+    return false;
+  }
+  for (let i = 0; i < rawWords.length; i += 1) {
+    if (rawWords[i] !== formattedWords[i]) {
       return false;
     }
   }
   return true;
+}
+
+function tokenizeWords(text: string): string[] {
+  const normalized = text
+    .toLowerCase()
+    .replace(/==illegible==/g, " illegible ")
+    .replace(/[^a-z0-9']+/g, " ")
+    .trim();
+  return normalized ? normalized.split(/\s+/) : [];
 }
 
 function lineSimilarity(lineA: string, lineB: string): number {
@@ -1680,80 +1844,6 @@ function normalizeLineForSimilarity(line: string): string {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function isSubstantialLine(line: string): boolean {
-  const alnumCount = line.replace(/[^a-z0-9]/gi, "").length;
-  return alnumCount >= 3;
-}
-
-function hasAnchorLine(previous: string[], next: string[]): boolean {
-  for (let i = 0; i < previous.length; i += 1) {
-    const prev = previous[i];
-    const nextLine = next[i];
-    if (!isLongLinePair(prev, nextLine)) {
-      continue;
-    }
-    if (lineSimilarity(prev, nextLine) >= OVERLAP_ANCHOR_SIMILARITY) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isLongLinePair(a: string, b: string): boolean {
-  const aCount = a.replace(/[^a-z0-9]/gi, "").length;
-  const bCount = b.replace(/[^a-z0-9]/gi, "").length;
-  return aCount >= OVERLAP_ANCHOR_MIN_CHARS && bCount >= OVERLAP_ANCHOR_MIN_CHARS;
-}
-
-function pickBetterLine(a: string, b: string): string {
-  const aIllegible = countIllegible(a);
-  const bIllegible = countIllegible(b);
-  if (aIllegible !== bIllegible) {
-    return aIllegible < bIllegible ? a : b;
-  }
-  const aLen = a.trim().length;
-  const bLen = b.trim().length;
-  if (aLen !== bLen) {
-    return aLen > bLen ? a : b;
-  }
-  return a;
-}
-
-function countIllegible(line: string): number {
-  const matches = line.match(/==ILLEGIBLE==/g);
-  return matches ? matches.length : 0;
-}
-
-function dedupeAdjacentLines(lines: string[]): string[] {
-  const result: string[] = [];
-  for (const line of lines) {
-    if (result.length === 0) {
-      result.push(line);
-      continue;
-    }
-    const last = result[result.length - 1];
-    if (areLinesNearDuplicate(last, line)) {
-      result[result.length - 1] = pickBetterLine(last, line);
-      continue;
-    }
-    result.push(line);
-  }
-  return result;
-}
-
-function areLinesNearDuplicate(a: string, b: string): boolean {
-  if (!isSubstantialLine(a) || !isSubstantialLine(b)) {
-    return false;
-  }
-  const similarity = lineSimilarity(a, b);
-  if (similarity < DEDUPE_SIMILARITY) {
-    return false;
-  }
-  const normA = normalizeLineForSimilarity(a);
-  const normB = normalizeLineForSimilarity(b);
-  return normA === normB || normA.includes(normB) || normB.includes(normA);
 }
 
 function levenshteinDistance(a: string, b: string): number {
