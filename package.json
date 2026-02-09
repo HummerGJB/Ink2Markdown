@@ -5,7 +5,12 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "test": "rm -rf .tmp-tests && tsc -p tsconfig.test.json && node --test \".tmp-tests/src/tests/**/*.test.js\"",
+    "ci": "npm run lint && npm run test && npm run build",
+    "setup:hooks": "sh scripts/setup-hooks.sh"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",

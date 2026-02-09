@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "exportedAt": "2026-02-09T00:00:00.000Z",
+  "settings": {
+    "schemaVersion": 2,
+    "provider": "openai",
+    "systemPrompt": "sys",
+    "extractionPrompt": "extract",
+    "cleanupPrompt": "cleanup",
+    "titlePrompt": "title",
+    "openaiApiKey": "",
+    "openaiModel": "gpt-5.2",
+    "azureEndpoint": "",
+    "azureDeployment": "",
+    "azureApiVersion": "",
+    "azureApiKey": "",
+    "maxConcurrency": 2,
+    "maxRequestsPerSecond": 2,
+    "maxLineRetries": 1,
+    "maxPageRetries": 1,
+    "segmentationCacheSize": 10,
+    "maxImageDimension": 2400,
+    "imageExportFormat": "png",
+    "imageJpegQuality": 0.9,
+    "logLevel": "info"
+  }
+}
