@@ -30,7 +30,6 @@ export class AzureOpenAIProvider implements AIProvider {
   ): Promise<string> {
     const response = await this.request(
       {
-        temperature: 0,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -58,7 +57,6 @@ export class AzureOpenAIProvider implements AIProvider {
   ): Promise<string> {
     const response = await this.request(
       {
-        temperature: 0,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -86,7 +84,6 @@ export class AzureOpenAIProvider implements AIProvider {
   ): Promise<string> {
     const response = await this.request(
       {
-        temperature: 0,
         messages: [
           { role: "system", content: systemPrompt },
           {

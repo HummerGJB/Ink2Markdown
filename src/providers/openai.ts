@@ -27,7 +27,6 @@ export class OpenAIProvider implements AIProvider {
     const body = {
       model: this.model,
       instructions: systemPrompt,
-      temperature: 0,
       input: [
         {
           role: "user",
@@ -54,7 +53,6 @@ export class OpenAIProvider implements AIProvider {
     const body = {
       model: this.model,
       instructions: systemPrompt,
-      temperature: 0,
       input: [
         {
           role: "user",
@@ -81,7 +79,6 @@ export class OpenAIProvider implements AIProvider {
     const body = {
       model: this.model,
       instructions: systemPrompt,
-      temperature: 0,
       input: [
         {
           role: "user",
