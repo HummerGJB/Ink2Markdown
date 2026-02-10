@@ -529,18 +529,25 @@ function addPromptSetting(
   resetLabel: string
 ): void {
   const setting = new Setting(containerEl).setName(name).setDesc(description);
+  setting.settingEl.addClass("ink2markdown-prompt-setting");
+
+  const resetContainer = document.createElement("div");
+  resetContainer.addClass("ink2markdown-prompt-reset");
+  const resetButton = resetContainer.createEl("button", { text: resetLabel });
+  resetButton.type = "button";
+  resetButton.addClass("mod-cta");
+  resetButton.addEventListener("click", async () => {
+    await onReset();
+  });
+
+  setting.descEl.insertAdjacentElement("afterend", resetContainer);
 
   setting.addTextArea((text) => {
     text.setValue(value).onChange(async (newValue) => {
       await onChange(newValue);
     });
-    text.inputEl.rows = 6;
-  });
-
-  setting.addButton((button) => {
-    button.setButtonText(resetLabel).onClick(async () => {
-      await onReset();
-    });
+    text.inputEl.rows = 10;
+    text.inputEl.addClass("ink2markdown-prompt-textarea");
   });
 }
 

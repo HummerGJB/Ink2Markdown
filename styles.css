@@ -79,3 +79,38 @@
 .ink2markdown-settings .setting-item-control {
   margin-right: 2px;
 }
+
+.ink2markdown-settings .ink2markdown-prompt-setting {
+  align-items: flex-start;
+}
+
+.ink2markdown-settings .ink2markdown-prompt-setting .setting-item-info {
+  flex: 0 0 34%;
+  max-width: 34%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ink2markdown-settings .ink2markdown-prompt-setting .setting-item-control {
+  flex: 1 1 auto;
+  width: auto;
+  display: block;
+}
+
+.ink2markdown-settings .ink2markdown-prompt-setting .ink2markdown-prompt-textarea {
+  width: 100%;
+  min-height: 240px;
+  box-sizing: border-box;
+}
+
+.ink2markdown-settings .ink2markdown-prompt-setting .ink2markdown-prompt-reset {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .ink2markdown-settings .ink2markdown-prompt-setting .setting-item-info {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
