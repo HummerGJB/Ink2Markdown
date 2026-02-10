@@ -79,7 +79,7 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
     if (this.plugin.settings.provider === "openai") {
       new Setting(containerEl)
         .setName("OpenAI API key")
-        .setDesc("Stored locally in plaintext as requested.")
+        .setDesc("Stored locally in plaintext.")
         .addText((text) => {
           text.inputEl.type = "password";
           text
@@ -152,7 +152,7 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
 
       new Setting(containerEl)
         .setName("Azure API key")
-        .setDesc("Stored locally in plaintext as requested.")
+        .setDesc("Stored locally in plaintext.")
         .addText((text) => {
           text.inputEl.type = "password";
           text
