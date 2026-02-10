@@ -1,5 +1,6 @@
 import {
   FINAL_FORMAT_PROMPT,
+  FULL_PAGE_TRANSCRIPTION_PROMPT,
   LINE_JUDGE_PROMPT,
   LINE_TRANSCRIPTION_PROMPT_A,
   LINE_TRANSCRIPTION_PROMPT_B
@@ -7,7 +8,7 @@ import {
 import { LINE_CONSENSUS_SIMILARITY } from "../constants/config";
 import { CancelledError } from "../core/errors";
 import type { CancellationToken } from "../core/cancellation";
-import type { LineTranscription, Prompts } from "../core/types";
+import type { LineSlice, LineTranscription, Prompts } from "../core/types";
 import type { AIProvider } from "../providers/base";
 import { segmentImageIntoLines, type ImageProcessingOptions } from "./image-processor";
 import {
@@ -48,11 +49,29 @@ export async function transcribeImageByLines(
 
   const totalLines = lineSlices.length;
   let completedLines = 0;
+  const fullPageImageDataUrl = chooseWholePageImageDataUrl(imageDataUrl, lineSlices);
 
   const promptA = buildLinePrompt(prompts.extractionPrompt, LINE_TRANSCRIPTION_PROMPT_A);
   const promptB = buildLinePrompt(prompts.extractionPrompt, LINE_TRANSCRIPTION_PROMPT_B);
   const formattingPrompt = buildLinePrompt(prompts.cleanupPrompt, FINAL_FORMAT_PROMPT);
   const lineResults: LineTranscription[] = [];
+  let fullPageAttempted = false;
+
+  if (shouldPreferWholePageMode(lineSlices)) {
+    fullPageAttempted = true;
+    const fullPage = await transcribeWholePageFallback(
+      fullPageImageDataUrl,
+      provider,
+      prompts,
+      token,
+      options.maxLineRetries,
+      formattingPrompt
+    );
+    if (fullPage) {
+      options.onLineProgress?.(totalLines, totalLines);
+      return fullPage;
+    }
+  }
 
   for (const lineSlice of lineSlices) {
     if (token.cancelled) {
@@ -118,7 +137,17 @@ export async function transcribeImageByLines(
 
   const rawPage = lineResults.map((line) => line.text).join("\n").trimEnd();
   if (!rawPage) {
-    return "";
+    if (fullPageAttempted) {
+      return "";
+    }
+    return transcribeWholePageFallback(
+      fullPageImageDataUrl,
+      provider,
+      prompts,
+      token,
+      options.maxLineRetries,
+      formattingPrompt
+    );
   }
 
   const formatted = normalizeMultilineOutput(
@@ -133,6 +162,80 @@ export async function transcribeImageByLines(
   }
 
   return preservesWordSequence(rawPage, formatted) ? formatted : rawPage;
+}
+
+async function transcribeWholePageFallback(
+  imageDataUrl: string,
+  provider: AIProvider,
+  prompts: Prompts,
+  token: CancellationToken,
+  maxRetries: number,
+  formattingPrompt: string
+): Promise<string> {
+  const fullPagePrompt = buildLinePrompt(prompts.extractionPrompt, FULL_PAGE_TRANSCRIPTION_PROMPT);
+  const rawFallback = normalizeMultilineOutput(
+    await withRetry(
+      () => provider.transcribeLine(imageDataUrl, prompts.systemPrompt, fullPagePrompt, token),
+      maxRetries
+    )
+  );
+
+  if (!rawFallback) {
+    return "";
+  }
+
+  const formatted = normalizeMultilineOutput(
+    await withRetry(
+      () => provider.formatTranscription(rawFallback, prompts.systemPrompt, formattingPrompt, token),
+      maxRetries
+    )
+  );
+  if (!formatted) {
+    return rawFallback;
+  }
+
+  return preservesWordSequence(rawFallback, formatted) ? formatted : rawFallback;
+}
+
+function shouldPreferWholePageMode(lineSlices: LineSlice[]): boolean {
+  if (lineSlices.length <= 1) {
+    return true;
+  }
+
+  const minTop = lineSlices.reduce((min, slice) => Math.min(min, slice.top), Number.POSITIVE_INFINITY);
+  const maxBottom = lineSlices.reduce(
+    (max, slice) => Math.max(max, slice.bottom),
+    Number.NEGATIVE_INFINITY
+  );
+  const estimatedPageHeight = Math.max(1, maxBottom - minTop);
+  const oversizedSliceThreshold = Math.max(120, Math.floor(estimatedPageHeight * 0.8));
+  return lineSlices.some((slice) => slice.bottom - slice.top >= oversizedSliceThreshold);
+}
+
+function chooseWholePageImageDataUrl(originalImageDataUrl: string, lineSlices: LineSlice[]): string {
+  if (lineSlices.length === 0) {
+    return originalImageDataUrl;
+  }
+
+  let largest = lineSlices[0];
+  for (const slice of lineSlices) {
+    if (slice.bottom - slice.top > largest.bottom - largest.top) {
+      largest = slice;
+    }
+  }
+
+  if (lineSlices.length === 1) {
+    return largest.imageDataUrl;
+  }
+
+  const minTop = lineSlices.reduce((min, slice) => Math.min(min, slice.top), Number.POSITIVE_INFINITY);
+  const maxBottom = lineSlices.reduce(
+    (max, slice) => Math.max(max, slice.bottom),
+    Number.NEGATIVE_INFINITY
+  );
+  const estimatedPageHeight = Math.max(1, maxBottom - minTop);
+  const largestCoverage = (largest.bottom - largest.top) / estimatedPageHeight;
+  return largestCoverage >= 0.8 ? largest.imageDataUrl : originalImageDataUrl;
 }
 
 /**

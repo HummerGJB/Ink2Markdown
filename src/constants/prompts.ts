@@ -53,6 +53,14 @@ Rules:
 3. Do not add content not visible in the image.
 4. Use ==ILLEGIBLE== for unreadable tokens.`;
 
+export const FULL_PAGE_TRANSCRIPTION_PROMPT = `You are given one full handwritten page image.
+Transcribe all visible text from the entire page into Markdown.
+Rules:
+1. Output only Markdown (no commentary, no code fences).
+2. Preserve wording, spelling, capitalization, punctuation, and symbols exactly.
+3. Keep content in reading order (top-to-bottom, left-to-right).
+4. Use ==ILLEGIBLE== for unreadable words or tokens.`;
+
 export const FINAL_FORMAT_PROMPT = `You will be given raw line-by-line transcription text from one page.
 Reformat it into clean Markdown structure while preserving text content.
 Rules:

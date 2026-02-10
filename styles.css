@@ -53,3 +53,29 @@
   gap: 8px;
   font-size: 0.95em;
 }
+
+.ink2markdown-setting-guidance {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.ink2markdown-setting-guidance > summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-normal);
+}
+
+.ink2markdown-setting-guidance > p {
+  margin: 8px 0 0;
+}
+
+.ink2markdown-settings .setting-item {
+  padding-left: 14px;
+  padding-right: 14px;
+  box-sizing: border-box;
+}
+
+.ink2markdown-settings .setting-item-control {
+  margin-right: 2px;
+}

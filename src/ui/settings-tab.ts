@@ -11,6 +11,41 @@ import type { ProviderType } from "../core/types";
 import type Ink2MarkdownPlugin from "../core/plugin";
 import { PrivacyModal } from "./modals/privacy-modal";
 
+const RUNTIME_SETTING_DETAILS = {
+  maxConcurrency:
+    "This limits how many images are converted in parallel by the conversion queue (used as the runWithConcurrency limit). Higher values can finish large notes faster, but they also increase peak memory usage and can trigger more simultaneous provider calls. Lower this if your machine feels sluggish, memory grows quickly, or you see provider rate-limit errors; raise it only if your system and provider limits can handle more parallel work.",
+  maxRequestsPerSecond:
+    "This is the provider-side request throttle used to construct the RateLimiter for OpenAI and Azure requests. It caps how quickly line transcription, line judging, formatting, title generation, and connection tests are sent. Increase it only if your account has headroom and you want faster throughput; decrease it if you get 429/rate-limit responses or need steadier, lower-impact traffic.",
+  maxLineRetries:
+    "This controls per-call retries inside transcription with withRetry. It applies to each line transcription call, line-judge call, and final formatting call, so larger values can recover from transient network/provider failures but also multiply total request count and runtime. Keep this low (0-1) for predictable speed/cost, and raise to 2-3 only when you regularly see temporary failures that usually succeed on retry.",
+  maxPageRetries:
+    "This wraps the entire per-image transcription pipeline in transcribeImageWithRecovery. When a page retry happens, the plugin reruns segmentation and line transcription for that image after a short backoff, which is useful for transient outages but can significantly increase total processing time. Keep it low unless your provider is intermittently failing across whole images.",
+  segmentationCacheSize:
+    "This sets how many segmented image results are kept in the in-memory segmentation cache (Map) before older entries are evicted. A larger cache avoids repeated segmentation work for the same image/settings combination and can speed repeated conversions, but it increases memory usage. Set to 0 to disable segmentation caching entirely if memory pressure is more important than speed.",
+  maxImageDimension:
+    "Before segmentation, each image is downscaled so its longest side is at most this many pixels. Lower values reduce memory, processing time, and payload sizes, but aggressive downscaling can blur small handwriting/text and hurt accuracy; higher values preserve detail at higher CPU/memory cost. Use the lowest value that still keeps your smallest text legible.",
+  imageJpegQuality:
+    "This is passed directly to canvas.toDataURL when line slices are exported as JPEG. Higher quality preserves detail but increases data size and request payloads; lower quality shrinks payloads but can introduce compression artifacts that reduce OCR quality on fine text. This setting is ignored when export format is PNG.",
+  imageExportFormat:
+    "This chooses the encoded line-slice format sent to the provider from image segmentation. PNG is lossless and generally safest for tiny or high-contrast text, but usually larger; JPEG is smaller/faster to upload, but lossy. If you see missed characters, prefer PNG; if payload size or speed is the bottleneck, try JPEG with a moderate-high quality setting.",
+  enableWorkerSegmentation:
+    "When enabled, text-region detection attempts to run in a Web Worker instead of the main UI thread, with automatic fallback to main-thread processing if worker execution fails. This can keep the app more responsive during heavy segmentation workloads. Disable only if you need to troubleshoot worker-related behavior or observe compatibility issues in your environment.",
+  enableResponseCache:
+    "This enables reuse of completed provider responses inside fetchWithRetry for identical requests within the configured TTL. It can reduce repeated API calls, latency, and cost when content/settings produce duplicate requests. Disable it if you need every request to hit the provider directly (for strict freshness); note that identical in-flight requests are still coalesced to one network call.",
+  responseCacheTtl:
+    "This is the lifetime of cached provider responses before they expire. Longer TTL improves cache hit rate and reduces repeated API work, but may reuse older responses for repeated identical inputs; shorter TTL favors freshness while reducing cache effectiveness. Choose a longer TTL for stable, repeat-heavy workflows and shorter TTL when prompt or image inputs change often.",
+  responseCacheMaxEntries:
+    "This is the maximum number of cached provider responses kept in memory. When the limit is reached, oldest entries are evicted first. Increase this if you process many repeated inputs and want better cache hit rates; decrease it to control memory growth in long sessions.",
+  responseCacheMaxMb:
+    "This is an approximate memory budget for cached provider responses. The cache tracks estimated payload size and evicts oldest items when it exceeds this cap, even if entry count is still below its separate limit. Lower it on memory-constrained systems; raise it if you want stronger caching for large responses and have memory headroom.",
+  memorySampleInterval:
+    "This controls how often the MemoryMonitor samples heap usage during conversion. Short intervals detect spikes earlier and produce finer diagnostics, but add more monitoring overhead; longer intervals reduce overhead but can miss short-lived spikes. Use shorter intervals when investigating memory issues, then increase for normal operation.",
+  memoryLeakWarn:
+    "This threshold is used by MemoryMonitor leak detection for heap growth across a run. A warning requires growth above this MB value plus at least 20% growth across multiple samples; when triggered, runtime caches are cleared automatically at the end of conversion. Lower it for aggressive detection, or raise it if you get warnings on expected large jobs.",
+  logLevel:
+    "This controls Logger verbosity globally (applied immediately on save). debug emits the most detail for troubleshooting; info is a balanced default; warn/error reduce log volume to problems only. Use lower verbosity in normal use, and switch to debug when diagnosing failures, performance anomalies, or unexpected retries."
+} as const;
+
 export class Ink2MarkdownSettingTab extends PluginSettingTab {
   private plugin: Ink2MarkdownPlugin;
 
@@ -22,6 +57,7 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass("ink2markdown-settings");
 
     containerEl.createEl("h2", { text: "Ink2Markdown Settings" });
 
@@ -145,42 +181,105 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h3", { text: "Runtime" });
 
-    addNumericSetting(containerEl, "Max concurrent images", "Pages processed at once.", this.plugin.settings.maxConcurrency, 1, 8, async (value) => {
-      this.plugin.settings.maxConcurrency = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Max concurrent images",
+      "Pages processed at once.",
+      this.plugin.settings.maxConcurrency,
+      1,
+      8,
+      async (value) => {
+        this.plugin.settings.maxConcurrency = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.maxConcurrency
+    );
 
-    addNumericSetting(containerEl, "Max requests per second", "Provider request rate limiter.", this.plugin.settings.maxRequestsPerSecond, 1, 20, async (value) => {
-      this.plugin.settings.maxRequestsPerSecond = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Max requests per second",
+      "Provider request rate limiter.",
+      this.plugin.settings.maxRequestsPerSecond,
+      1,
+      20,
+      async (value) => {
+        this.plugin.settings.maxRequestsPerSecond = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.maxRequestsPerSecond
+    );
 
-    addNumericSetting(containerEl, "Line retries", "Retries for recoverable line failures.", this.plugin.settings.maxLineRetries, 0, 4, async (value) => {
-      this.plugin.settings.maxLineRetries = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Line retries",
+      "Retries for recoverable line failures.",
+      this.plugin.settings.maxLineRetries,
+      0,
+      4,
+      async (value) => {
+        this.plugin.settings.maxLineRetries = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.maxLineRetries
+    );
 
-    addNumericSetting(containerEl, "Page retries", "Retries for recoverable page failures.", this.plugin.settings.maxPageRetries, 0, 3, async (value) => {
-      this.plugin.settings.maxPageRetries = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Page retries",
+      "Retries for recoverable page failures.",
+      this.plugin.settings.maxPageRetries,
+      0,
+      3,
+      async (value) => {
+        this.plugin.settings.maxPageRetries = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.maxPageRetries
+    );
 
-    addNumericSetting(containerEl, "Segmentation cache size", "Number of segmented images held in memory.", this.plugin.settings.segmentationCacheSize, 0, 100, async (value) => {
-      this.plugin.settings.segmentationCacheSize = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Segmentation cache size",
+      "Number of segmented images held in memory.",
+      this.plugin.settings.segmentationCacheSize,
+      0,
+      100,
+      async (value) => {
+        this.plugin.settings.segmentationCacheSize = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.segmentationCacheSize
+    );
 
-    addNumericSetting(containerEl, "Max image dimension", "Downscale long edge before segmentation (px).", this.plugin.settings.maxImageDimension, 600, 5000, async (value) => {
-      this.plugin.settings.maxImageDimension = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Max image dimension",
+      "Downscale long edge before segmentation (px).",
+      this.plugin.settings.maxImageDimension,
+      600,
+      5000,
+      async (value) => {
+        this.plugin.settings.maxImageDimension = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.maxImageDimension
+    );
 
-    addNumericSetting(containerEl, "JPEG quality (%)", "Used when image export format is JPEG.", Math.round(this.plugin.settings.imageJpegQuality * 100), 20, 100, async (value) => {
-      this.plugin.settings.imageJpegQuality = value / 100;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "JPEG quality (%)",
+      "Used when image export format is JPEG.",
+      Math.round(this.plugin.settings.imageJpegQuality * 100),
+      20,
+      100,
+      async (value) => {
+        this.plugin.settings.imageJpegQuality = value / 100;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.imageJpegQuality
+    );
 
-    new Setting(containerEl)
+    const imageExportFormatSetting = new Setting(containerEl)
       .setName("Image export format")
       .setDesc("Line-slice image format sent to provider.")
       .addDropdown((dropdown) => {
@@ -193,8 +292,9 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    addSettingGuidance(imageExportFormatSetting, RUNTIME_SETTING_DETAILS.imageExportFormat);
 
-    new Setting(containerEl)
+    const useWorkerSegmentationSetting = new Setting(containerEl)
       .setName("Use worker segmentation")
       .setDesc("Run heavy line-segmentation analysis in a Web Worker.")
       .addToggle((toggle) => {
@@ -205,10 +305,11 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    addSettingGuidance(useWorkerSegmentationSetting, RUNTIME_SETTING_DETAILS.enableWorkerSegmentation);
 
-    new Setting(containerEl)
+    const enableResponseCacheSetting = new Setting(containerEl)
       .setName("Enable response cache")
-      .setDesc("Cache provider responses and coalesce identical in-flight requests.")
+      .setDesc("Cache completed provider responses (in-flight requests are always coalesced).")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.enableResponseCache)
@@ -217,33 +318,79 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    addSettingGuidance(enableResponseCacheSetting, RUNTIME_SETTING_DETAILS.enableResponseCache);
 
-    addNumericSetting(containerEl, "Response cache TTL (sec)", "How long cached provider responses remain valid.", Math.round(this.plugin.settings.responseCacheTtlMs / 1000), 10, 86400, async (value) => {
-      this.plugin.settings.responseCacheTtlMs = value * 1000;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Response cache TTL (sec)",
+      "How long cached provider responses remain valid.",
+      Math.round(this.plugin.settings.responseCacheTtlMs / 1000),
+      10,
+      86400,
+      async (value) => {
+        this.plugin.settings.responseCacheTtlMs = value * 1000;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.responseCacheTtl
+    );
 
-    addNumericSetting(containerEl, "Response cache max entries", "Maximum number of cached responses.", this.plugin.settings.responseCacheMaxEntries, 10, 2000, async (value) => {
-      this.plugin.settings.responseCacheMaxEntries = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Response cache max entries",
+      "Maximum number of cached responses.",
+      this.plugin.settings.responseCacheMaxEntries,
+      10,
+      2000,
+      async (value) => {
+        this.plugin.settings.responseCacheMaxEntries = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.responseCacheMaxEntries
+    );
 
-    addNumericSetting(containerEl, "Response cache max MB", "Approximate memory cap for cached responses.", this.plugin.settings.responseCacheMaxBytesMb, 10, 1024, async (value) => {
-      this.plugin.settings.responseCacheMaxBytesMb = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Response cache max MB",
+      "Approximate memory cap for cached responses.",
+      this.plugin.settings.responseCacheMaxBytesMb,
+      10,
+      1024,
+      async (value) => {
+        this.plugin.settings.responseCacheMaxBytesMb = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.responseCacheMaxMb
+    );
 
-    addNumericSetting(containerEl, "Memory sample interval (ms)", "Sampling interval for memory monitor.", this.plugin.settings.memorySampleIntervalMs, 500, 60000, async (value) => {
-      this.plugin.settings.memorySampleIntervalMs = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Memory sample interval (ms)",
+      "Sampling interval for memory monitor.",
+      this.plugin.settings.memorySampleIntervalMs,
+      500,
+      60000,
+      async (value) => {
+        this.plugin.settings.memorySampleIntervalMs = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.memorySampleInterval
+    );
 
-    addNumericSetting(containerEl, "Leak warning threshold (MB)", "Warn when heap growth exceeds this threshold.", this.plugin.settings.memoryLeakWarnMb, 16, 2048, async (value) => {
-      this.plugin.settings.memoryLeakWarnMb = value;
-      await this.plugin.saveSettings();
-    });
+    addNumericSetting(
+      containerEl,
+      "Leak warning threshold (MB)",
+      "Warn when heap growth exceeds this threshold.",
+      this.plugin.settings.memoryLeakWarnMb,
+      16,
+      2048,
+      async (value) => {
+        this.plugin.settings.memoryLeakWarnMb = value;
+        await this.plugin.saveSettings();
+      },
+      RUNTIME_SETTING_DETAILS.memoryLeakWarn
+    );
 
-    new Setting(containerEl)
+    const logLevelSetting = new Setting(containerEl)
       .setName("Log level")
       .setDesc("Controls plugin log verbosity.")
       .addDropdown((dropdown) => {
@@ -259,6 +406,7 @@ export class Ink2MarkdownSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    addSettingGuidance(logLevelSetting, RUNTIME_SETTING_DETAILS.logLevel);
 
     containerEl.createEl("h3", { text: "Prompts" });
 
@@ -403,9 +551,10 @@ function addNumericSetting(
   value: number,
   min: number,
   max: number,
-  onChange: (value: number) => Promise<void>
+  onChange: (value: number) => Promise<void>,
+  guidance?: string
 ): void {
-  new Setting(containerEl)
+  const setting = new Setting(containerEl)
     .setName(name)
     .setDesc(`${description} (${min}-${max})`)
     .addText((text) => {
@@ -422,4 +571,20 @@ function addNumericSetting(
         });
       text.inputEl.inputMode = "numeric";
     });
+
+  if (guidance) {
+    addSettingGuidance(setting, guidance);
+  }
+}
+
+function addSettingGuidance(setting: Setting, guidance: string): void {
+  const details = setting.descEl.createEl("details", {
+    cls: "ink2markdown-setting-guidance"
+  });
+  details.createEl("summary", {
+    text: "How this setting works"
+  });
+  details.createEl("p", {
+    text: guidance
+  });
 }

@@ -248,6 +248,13 @@ export default class Ink2MarkdownPlugin extends Plugin {
             );
           }
         );
+        if (!markdown.trim()) {
+          this.logger.warn("Image transcription returned empty output", {
+            imageIndex: index + 1,
+            totalImages: embeds.length,
+            linkpath: embed.linkpath
+          });
+        }
 
         completed += 1;
         memoryMonitor.sample(`after-image-${index + 1}`);
@@ -267,17 +274,27 @@ export default class Ink2MarkdownPlugin extends Plugin {
       progressModal.setStatus("Finalizing transcription...");
       progressModal.setDetail("Merging page output.");
       const combined = pageMarkdown.join("\n\n");
+      const combinedTrimmed = combined.trim();
+
+      if (!combinedTrimmed) {
+        this.logger.warn("Conversion produced empty transcription", {
+          totalImages: embeds.length
+        });
+        progressModal.close();
+        new Notice("No transcribable text was detected in the embedded images.");
+        return null;
+      }
 
       if (token.cancelled) {
         throw new CancelledError();
       }
 
-      const updated = insertBelowFrontmatter(noteText, combined.trimEnd());
+      const updated = insertBelowFrontmatter(noteText, combinedTrimmed);
       await this.app.vault.modify(file, updated);
 
       progressModal.close();
       new Notice("Inserted Markdown transcription at top of note.");
-      return combined.trim();
+      return combinedTrimmed;
     } catch (error) {
       token.cancel();
       this.setState({ cancelled: true });
