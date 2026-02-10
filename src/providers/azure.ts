@@ -1,9 +1,12 @@
 import type { CancellationToken } from "../core/cancellation";
 import type { AzureProviderConfig } from "../core/types";
+import { isAzureMaxTokensError } from "../utils/error-handler";
 import type { AIProvider, ProviderRuntimeOptions } from "./base";
 import { fetchWithRetry } from "./http";
 import { extractAzureOutputText } from "./parsers";
 import { RateLimiter } from "./rate-limiter";
+
+const MAX_TOKEN_RETRY_SEQUENCE = [1536, 2048, 3072, 4096];
 
 export class AzureOpenAIProvider implements AIProvider {
   private readonly endpoint: string;
@@ -127,7 +130,43 @@ export class AzureOpenAIProvider implements AIProvider {
     return extractAzureOutputText(response);
   }
 
-  private request(body: unknown, token: CancellationToken): Promise<unknown> {
+  private async request(body: Record<string, unknown>, token: CancellationToken): Promise<unknown> {
+    try {
+      return await this.sendRequest(body, token);
+    } catch (error) {
+      if (!isAzureMaxTokensError(error) || token.cancelled) {
+        throw error;
+      }
+
+      const startingMaxTokens = getBodyMaxTokens(body) ?? 0;
+      let lastError: unknown = error;
+
+      for (const maxTokens of MAX_TOKEN_RETRY_SEQUENCE) {
+        if (maxTokens <= startingMaxTokens) {
+          continue;
+        }
+
+        try {
+          return await this.sendRequest(
+            {
+              ...body,
+              max_tokens: maxTokens
+            },
+            token
+          );
+        } catch (retryError) {
+          lastError = retryError;
+          if (!isAzureMaxTokensError(retryError) || token.cancelled) {
+            throw retryError;
+          }
+        }
+      }
+
+      throw lastError;
+    }
+  }
+
+  private sendRequest(body: Record<string, unknown>, token: CancellationToken): Promise<unknown> {
     return fetchWithRetry(
       this.buildUrl(),
       {
@@ -156,4 +195,12 @@ export class AzureOpenAIProvider implements AIProvider {
       this.deployment
     )}/chat/completions?api-version=${encodeURIComponent(this.apiVersion)}`;
   }
+}
+
+function getBodyMaxTokens(body: Record<string, unknown>): number | null {
+  const maxTokens = body.max_tokens;
+  if (typeof maxTokens !== "number" || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+    return null;
+  }
+  return Math.floor(maxTokens);
 }

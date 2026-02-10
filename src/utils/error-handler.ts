@@ -12,7 +12,8 @@ export function toAppError(error: unknown): AppError {
   }
 
   if (error instanceof ProviderError) {
-    const recoverable = !error.status || error.status === 429 || error.status >= 500;
+    const recoverable =
+      !error.status || error.status === 429 || error.status >= 500 || isAzureMaxTokensError(error);
     return {
       code: "PROVIDER_ERROR",
       message: formatProviderError(error),
@@ -49,6 +50,23 @@ export function formatError(error: unknown): string {
 
 export function isRecoverableError(error: unknown): boolean {
   return toAppError(error).recoverable;
+}
+
+export function isAzureMaxTokensError(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) {
+    return false;
+  }
+
+  if (error.provider !== "azure" || error.status !== 400) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  if (!/(^|[^a-z])max[_\s-]?tokens?([^a-z]|$)/i.test(message)) {
+    return false;
+  }
+
+  return /higher|increase|could not finish|ran out|too low/i.test(message);
 }
 
 function formatProviderError(error: ProviderError): string {
